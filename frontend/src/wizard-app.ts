@@ -1,8 +1,6 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
 
-const BACKEND = 'http://localhost:3001'
-
 @customElement('wizard-app')
 export class WizardApp extends LitElement {
   @state() private name = ''
@@ -34,7 +32,7 @@ export class WizardApp extends LitElement {
   private async sayHello() {
     this.loading = true
     try {
-      const res = await fetch(`${BACKEND}/api/hello`, {
+      const res = await fetch('/api/hello', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: this.name }),
