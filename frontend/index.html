@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wizard</title>
+    <style>
+      /* Nur html/body zurücksetzen - "display"/"height" von wizard-app NICHT hier setzen: Styles
+         aus dem äußeren Dokument überschreiben :host-Regeln der Komponente immer (unabhängig von
+         Spezifität), das würde deren eigenes "display: flex"-Layout kaputt machen. */
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <wizard-app></wizard-app>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

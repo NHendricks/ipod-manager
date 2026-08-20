@@ -1,0 +1,16 @@
+{
+  "name": "wizard-electron",
+  "private": true,
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "download": "node scripts/download-electron.mjs",
+    "download:mac": "node scripts/download-electron-mac.mjs",
+    "start": "node scripts/start.mjs",
+    "build": "node build.mjs",
+    "build:mac": "node scripts/build-mac.mjs"
+  },
+  "dependencies": {
+    "undici": "^7.16.0"
+  }
+}

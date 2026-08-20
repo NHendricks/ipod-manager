@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+frontend/src/*.js
+frontend/src/*.js.map
+
+electron/downloads/
+electron/electron-dist/
+electron/electron-dist-mac/
+electron/app-content/
+electron/app-content-mac/
+electron/build-output/
+electron/build-output-mac/
