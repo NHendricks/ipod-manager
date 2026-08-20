@@ -28,8 +28,21 @@ async function main() {
   fs.rmSync(distDir, { recursive: true, force: true });
   fs.mkdirSync(distDir, { recursive: true });
   // Hinweis: GNU tar (Standard unter Linux) kann keine ZIPs entpacken - dort bsdtar bzw.
-  // "libarchive-tools" installieren. Windows- und macOS-"tar" sind bereits bsdtar.
-  execSync(`tar -xf "${zipPath}" -C "${distDir}"`, { stdio: 'inherit' });
+  // "libarchive-tools" installieren. Windows- und macOS-"tar" sind bereits bsdtar - ABER: falls
+  // "npm run download" aus einer Git-Bash/MSYS-Shell heraus läuft, kann deren mitgeliefertes
+  // GNU tar (usr/bin/tar.exe) in PATH vor dem echten Windows-bsdtar (System32/tar.exe) stehen
+  // und "This does not look like a tar archive" werfen. Auf Windows daher explizit das
+  // System32-bsdtar verwenden statt "tar" per PATH aufzulösen.
+  const tarBin = platform === 'win32'
+    ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+    : 'tar';
+  // Pfade relativ zu electronDir übergeben (statt absolut): ein absoluter Windows-Pfad wie
+  // "D:\..." wird von manchen tar-Implementierungen (z.B. Git-Bash/MSYS) fälschlich als
+  // "host:path"-Fernarchiv-Syntax interpretiert ("Cannot connect to D: resolve failed").
+  execSync(`"${tarBin}" -xf "${path.relative(electronDir, zipPath)}" -C "${path.relative(electronDir, distDir)}"`, {
+    cwd: electronDir,
+    stdio: 'inherit',
+  });
 
   console.log(`✅ Electron v${ELECTRON_VERSION} (${platform}-${arch}, "${zipName}") bereit unter ${distDir}`);
 }
