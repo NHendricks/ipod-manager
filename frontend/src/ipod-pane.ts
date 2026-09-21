@@ -112,6 +112,10 @@ export class IpodPane extends LitElement {
     if (this.sel.handleKey(e, this.ids, this.pageSize())) {
       e.preventDefault()
       this.selectionChanged()
+    } else if (e.key === 'Delete') {
+      e.preventDefault()
+      const ids = new Set(this.selectedIds)
+      void this.deleteTracks(this.tracks.filter((t) => ids.has(t.id)))
     }
   }
 
@@ -205,21 +209,35 @@ export class IpodPane extends LitElement {
     await this.refreshStatus()
   }
 
-  private async removeTrack(track: IpodTrack, e: Event) {
-    e.stopPropagation()
-    try {
-      const res = await fetch(`/api/ipod/tracks/${track.id}`, { method: 'DELETE' })
-      const data = await res.json()
-      if (data.error) this.error = data.error
-      else {
-        this.tracks = this.tracks.filter((t) => t.id !== track.id)
-        this.sel.selected.delete(String(track.id))
-        this.emitSelection()
-        await this.refreshStatus()
+  /** Deletes tracks from the iPod (database entry and audio file) after asking - this can't be undone. */
+  private async deleteTracks(tracks: IpodTrack[]): Promise<void> {
+    if (tracks.length === 0 || this.importProgress) return
+    const what =
+      tracks.length === 1 ? `"${tracks[0].title ?? '(unknown)'}"` : `${tracks.length} tracks`
+    if (!confirm(`Delete ${what} from the iPod? The audio files are removed and this can't be undone.`)) return
+
+    let failure = ''
+    for (let i = 0; i < tracks.length; i++) {
+      this.importProgress = `Deleting ${i + 1}/${tracks.length}…`
+      try {
+        const res = await fetch(`/api/ipod/tracks/${tracks[i].id}`, { method: 'DELETE' })
+        const data = await res.json()
+        if (data.error) failure ||= data.error
+      } catch {
+        failure ||= 'Backend nicht erreichbar'
       }
-    } catch {
-      this.error = 'Backend nicht erreichbar'
     }
+    this.importProgress = ''
+    this.sel.clear()
+    await this.loadTracks()
+    await this.refreshStatus()
+    this.emitSelection()
+    if (failure) this.error = failure
+  }
+
+  private onRemoveClick(track: IpodTrack, e: Event) {
+    e.stopPropagation()
+    void this.deleteTracks([track])
   }
 
   private get filteredTracks(): IpodTrack[] {
@@ -290,7 +308,7 @@ export class IpodPane extends LitElement {
                             <td>${track.title ?? '(unknown)'}</td>
                             <td>${track.artist ?? ''}</td>
                             <td>${track.album ?? ''}</td>
-                            <td class="remove"><button @click=${(e: Event) => this.removeTrack(track, e)} title="Remove">×</button></td>
+                            <td class="remove"><button @click=${(e: Event) => this.onRemoveClick(track, e)} title="Remove">×</button></td>
                           </tr>
                         `,
                       )}

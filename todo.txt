@@ -1,8 +1,5 @@
-(/) F3 show metadata
-(/) toggle button in menubar to create subfolders for artist, then album when copying from ipod
-(/) F5 copy files
-(/) Ctrl+A select all Shitft Page down select many at aone
-- enable delete from ipod
+- also get image from mp3 and save it as folder.jpeg
 - support copy folder to ipod (implemented?)
 - convert button to set album/artist from subfolders. User needs to sort mp3 in artist/album/file.mp3
   Implement logic from ... (nils) for setting id3 tags
+- improve speed when delete or copy from/to ipad

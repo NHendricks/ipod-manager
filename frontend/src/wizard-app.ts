@@ -126,7 +126,7 @@ export class WizardApp extends LitElement {
         >
           Artist/Album folders: ${this.organizeExports ? 'on' : 'off'}
         </button>
-        <span class="hint">F3 metadata · F5 copy to other pane · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
+        <span class="hint">F3 metadata · F5 copy to other pane · Del delete from iPod · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
       </div>
       <local-pane .organizeExports=${this.organizeExports} @selection-change=${this.onSelectionChange}></local-pane>
       <ipod-pane @selection-change=${this.onSelectionChange}></ipod-pane>
