@@ -12,7 +12,7 @@
  * Commands:
  *   ipodctl info   <mountpoint>
  *   ipodctl list   <mountpoint>
- *   ipodctl add    <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype>
+ *   ipodctl add    <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> [coverfile]
  *   ipodctl remove <mountpoint> <trackId>
  *   ipodctl extract <mountpoint> <trackId> <destfile>
  */
@@ -195,6 +195,13 @@ static int cmd_add(int argc, char **argv) {
     return fail_gerror("Could not copy file onto the iPod", error);
   }
 
+  /* Optional cover image (argv[14], a jpg/png file extracted by the Node side). Best-effort:
+     a model without artwork support or an unreadable image must not fail the whole copy. */
+  gboolean artwork = FALSE;
+  if (argc > 14 && argv[14][0] != '\0' && itdb_device_supports_artwork(itdb->device)) {
+    artwork = itdb_track_set_thumbnails(track, argv[14]);
+  }
+
   if (!itdb_write(itdb, &error)) {
     itdb_free(itdb);
     return fail_gerror("Could not write iTunesDB", error);
@@ -202,6 +209,7 @@ static int cmd_add(int argc, char **argv) {
 
   GString *buf = g_string_new("{");
   jint(buf, "id", track->id, TRUE);
+  jint(buf, "artwork", artwork ? 1 : 0, TRUE);
   jstr(buf, "ipodPath", track->ipod_path, FALSE);
   g_string_append_c(buf, '}');
   puts(buf->str);

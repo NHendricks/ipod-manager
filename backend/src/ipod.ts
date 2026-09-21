@@ -4,6 +4,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseFile } from 'music-metadata'
@@ -148,11 +149,19 @@ async function backupItunesDb(ipod: IpodLocation): Promise<void> {
 export async function addTrack(
   ipod: IpodLocation,
   windowsFilePath: string,
-): Promise<{ id: number; ipodPath: string }> {
+): Promise<{ id: number; ipodPath: string; artwork: number }> {
   await backupItunesDb(ipod)
   const tags = await parseFile(windowsFilePath).catch(() => null)
   const common = tags?.common
   const format = tags?.format
+
+  // libgpod builds the iPod's thumbnails from an image file, so hand it the embedded cover as a temp file.
+  const picture = common?.picture?.find((p) => p.format === 'image/jpeg' || p.format === 'image/png')
+  let coverFile = ''
+  if (picture) {
+    coverFile = path.join(os.tmpdir(), `ipod-cover-${process.pid}-${Date.now()}.${picture.format === 'image/png' ? 'png' : 'jpg'}`)
+    await fs.writeFile(coverFile, picture.data)
+  }
 
   const args = [
     'add',
@@ -168,8 +177,13 @@ export async function addTrack(
     String(Math.round((format?.bitrate ?? 0) / 1000)),
     String(Math.round(format?.sampleRate ?? 0)),
     '', // filetype: let ipodctl guess it from the file extension
+    coverFile ? windowsToWsl(coverFile) : '',
   ]
-  return runIpodctl(args)
+  try {
+    return await runIpodctl(args)
+  } finally {
+    if (coverFile) await fs.rm(coverFile, { force: true })
+  }
 }
 
 export async function removeTrack(ipod: IpodLocation, trackId: number): Promise<void> {
