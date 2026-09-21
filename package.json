@@ -6,7 +6,8 @@
     "install:all": "npm install && cd frontend && npm install&& cd ../backend && npm install",
     "dev": "node scripts/dev.mjs",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "build:win": "npm run download --prefix electron && npm run build --prefix electron",
+    "build:ipodctl": "wsl -d Ubuntu-24.04 -- bash wsl/build.sh",
+    "build:win": "npm run build:ipodctl && npm run download --prefix electron && npm run build --prefix electron",
     "build:mac": "npm run download:mac --prefix electron && npm run build:mac --prefix electron"
   }
 }

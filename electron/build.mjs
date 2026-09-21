@@ -124,12 +124,28 @@ export async function build({
   console.log('   📦 Installiere Produktions-Abhängigkeiten des Backends...');
   run('npm install --omit=dev --no-audit --no-fund', backendStage);
 
-  // Electron-Hauptprozess.
+  // Electron-Hauptprozess + Preload-Script.
   fs.copyFileSync(path.join(__dirname, 'main.js'), path.join(appContentDir, 'main.js'));
+  fs.copyFileSync(path.join(__dirname, 'preload.js'), path.join(appContentDir, 'preload.js'));
   fs.writeFileSync(
     path.join(appContentDir, 'package.json'),
     JSON.stringify({ name: appName, private: true, main: 'main.js' }, null, 2),
   );
+
+  // iPod-Helper (siehe wsl/ipodctl.c): Windows-only, läuft via WSL - vorher einmalig mit
+  // "wsl/build.sh" kompilieren. Wird als Geschwister-Ordner von backend/ mitkopiert, damit die
+  // relative Pfadauflösung in backend/src/ipod.ts (dist/../../wsl/build/ipodctl) aufgeht.
+  if (targetPlatform === 'win32') {
+    const ipodctlPath = path.join(rootDir, 'wsl', 'build', 'ipodctl');
+    if (!fs.existsSync(ipodctlPath)) {
+      throw new Error(
+        `iPod-Helper nicht gefunden unter "${ipodctlPath}".\n` +
+          'Vorher einmalig "wsl -d Ubuntu-24.04 -- bash wsl/build.sh" ausführen.',
+      );
+    }
+    fs.mkdirSync(path.join(appContentDir, 'wsl', 'build'), { recursive: true });
+    fs.copyFileSync(ipodctlPath, path.join(appContentDir, 'wsl', 'build', 'ipodctl'));
+  }
 
   // 3) Electron-Distribution kopieren.
   console.log('\n📦 Schritt 3: Electron-Distribution kopieren...');

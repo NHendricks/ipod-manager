@@ -11,3 +11,5 @@ electron/app-content/
 electron/app-content-mac/
 electron/build-output/
 electron/build-output-mac/
+
+wsl/build/

@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
-    "hono": "^4.7.11"
+    "hono": "^4.7.11",
+    "music-metadata": "^11.15.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

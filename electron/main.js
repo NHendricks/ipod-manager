@@ -1,7 +1,8 @@
 // Minimaler Electron-Hauptprozess. Im gepackten Build läuft KEIN eigener HTTP-Server/Port
 // für das Backend: das Hono-"app.js" wird direkt importiert und über protocol.handle()
-// portlos an das Fenster angebunden (Custom-Scheme "wizard://"). Kein Preload, keine IPC,
-// kein ASAR – bewusst so einfach wie möglich gehalten.
+// portlos an das Fenster angebunden (Custom-Scheme "wizard://"). Kein ASAR, kein IPC – bewusst
+// so einfach wie möglich gehalten. Einziges Preload-Script (preload.js) exponiert nur
+// webUtils.getPathForFile fürs Drag&Drop von Dateien aus dem Explorer.
 const { app, BrowserWindow, protocol } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -38,6 +39,9 @@ function createWindow(url) {
     width: 1280,
     height: 860,
     title: 'Wizard',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
   mainWindow.loadURL(url);
 }
