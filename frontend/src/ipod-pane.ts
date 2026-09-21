@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js'
 import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
+import { renderProgress, progressStyles, runJob, type Progress } from './progress'
 
 @customElement('ipod-pane')
 export class IpodPane extends LitElement {
@@ -12,7 +13,7 @@ export class IpodPane extends LitElement {
   @state() private filter = ''
   @state() private error = ''
   @state() private dragOver = false
-  @state() private importProgress = ''
+  @state() private progress: Progress | null = null
   private pollHandle?: ReturnType<typeof setInterval>
   private polling = false
 
@@ -54,7 +55,7 @@ export class IpodPane extends LitElement {
     .dropzone.drop-target { outline: 2px dashed #7c3aed; outline-offset: -2px; }
     .empty, .error, .disconnected { padding: 24px; text-align: center; color: #6d6d80; font-size: .85rem; }
     .error { color: #f77; }
-    .progress { padding: 6px 12px; font-size: .75rem; color: #a78bfa; flex-shrink: 0; }
+    ${progressStyles}
   `
 
   connectedCallback() {
@@ -195,54 +196,45 @@ export class IpodPane extends LitElement {
 
   /** Copies local audio files onto the iPod (drag & drop, or F5 from the local pane). */
   async importFiles(paths: string[]): Promise<void> {
-    if (paths.length === 0 || !this.status.connected || this.importProgress) return
+    if (paths.length === 0 || !this.status.connected || this.progress) return
 
-    // Chunks share one iTunesDB read+write on the backend (the slow part), while still giving progress.
-    for (let i = 0; i < paths.length; i += BATCH_SIZE) {
-      const chunk = paths.slice(i, i + BATCH_SIZE)
-      this.importProgress = `Importing ${Math.min(i + chunk.length, paths.length)}/${paths.length}…`
-      try {
-        const res = await fetch('/api/ipod/tracks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePaths: chunk }),
-        })
-        const data = await res.json()
-        if (data.error) this.error = data.error
-        else this.error = data.results.find((r: { error?: string }) => r.error)?.error ?? this.error
-      } catch {
-        this.error = 'Backend nicht erreichbar'
-      }
+    this.progress = { label: 'Copying to iPod', done: 0, total: paths.length }
+    try {
+      const { results } = await runJob<{ results: { error?: string }[] }>(
+        '/api/ipod/tracks',
+        { filePaths: paths },
+        (done, total) => (this.progress = { label: 'Copying to iPod', done, total }),
+      )
+      this.error = results.find((r) => r.error)?.error ?? this.error
+    } catch (err) {
+      this.error = errorMessage(err)
+    } finally {
+      this.progress = null
     }
-    this.importProgress = ''
     await this.loadTracks()
     await this.refreshStatus()
   }
 
   /** Deletes tracks from the iPod (database entry and audio file) after asking - this can't be undone. */
   private async deleteTracks(tracks: IpodTrack[]): Promise<void> {
-    if (tracks.length === 0 || this.importProgress) return
+    if (tracks.length === 0 || this.progress) return
     const what =
       tracks.length === 1 ? `"${tracks[0].title ?? '(unknown)'}"` : `${tracks.length} tracks`
     if (!confirm(`Delete ${what} from the iPod? The audio files are removed and this can't be undone.`)) return
 
     let failure = ''
-    for (let i = 0; i < tracks.length; i += BATCH_SIZE) {
-      const chunk = tracks.slice(i, i + BATCH_SIZE)
-      this.importProgress = `Deleting ${Math.min(i + chunk.length, tracks.length)}/${tracks.length}…`
-      try {
-        const res = await fetch('/api/ipod/tracks/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: chunk.map((t) => t.id) }),
-        })
-        const data = await res.json()
-        if (data.error) failure ||= data.error
-      } catch {
-        failure ||= 'Backend nicht erreichbar'
-      }
+    this.progress = { label: 'Deleting from iPod', done: 0, total: tracks.length }
+    try {
+      await runJob(
+        '/api/ipod/tracks/delete',
+        { ids: tracks.map((t) => t.id) },
+        (done, total) => (this.progress = { label: 'Deleting from iPod', done, total }),
+      )
+    } catch (err) {
+      failure = errorMessage(err)
+    } finally {
+      this.progress = null
     }
-    this.importProgress = ''
     this.sel.clear()
     await this.loadTracks()
     await this.refreshStatus()
@@ -289,7 +281,7 @@ export class IpodPane extends LitElement {
             />
           `
         : ''}
-      ${this.importProgress ? html`<div class="progress">${this.importProgress}</div>` : ''}
+      ${renderProgress(this.progress)}
       <div
         class=${this.dragOver ? 'dropzone drop-target' : 'dropzone'}
         @dragover=${this.onDragOver}
@@ -336,8 +328,10 @@ export class IpodPane extends LitElement {
   }
 }
 
-// Tracks per backend request when copying to / deleting from the iPod.
-const BATCH_SIZE = 25
+function errorMessage(err: unknown): string {
+  // fetch() rejects with a TypeError when the backend can't be reached; anything else carries the server's message.
+  return err instanceof TypeError ? 'Backend nicht erreichbar' : err instanceof Error ? err.message : String(err)
+}
 
 function formatSize(bytes: number): string {
   const gb = bytes / 1024 / 1024 / 1024

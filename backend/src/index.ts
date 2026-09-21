@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import * as ipod from './ipod.js'
 import { defaultLocalDir, listLocalDir } from './local-files.js'
 import { readMetadata } from './metadata.js'
+import { getJob, startJob } from './jobs.js'
 import { parseFile } from 'music-metadata'
 
 export const app = new Hono()
@@ -45,12 +46,16 @@ app.post('/api/ipod/tracks', async (c) => {
   if (!Array.isArray(body.filePaths) || body.filePaths.length === 0) {
     return c.json({ error: 'filePaths is required' }, 400)
   }
-  try {
-    // One result per file, in order: { id, ipodPath, artwork } or { error }.
-    return c.json({ results: await ipod.addTracks(location, body.filePaths) })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
+  const filePaths = body.filePaths
+  // Job result: { results } with one { id, ipodPath, artwork } or { error } per file, in order.
+  return c.json(
+    startJob(filePaths.length, async (advance) => ({ results: await ipod.addTracks(location, filePaths, advance) })),
+  )
+})
+
+app.get('/api/jobs/:id', (c) => {
+  const job = getJob(c.req.param('id'))
+  return job ? c.json(job) : c.json({ error: 'Unknown job' }, 404)
 })
 
 app.post('/api/ipod/tracks/delete', async (c) => {
@@ -58,11 +63,9 @@ app.post('/api/ipod/tracks/delete', async (c) => {
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
   const body = (await c.req.json().catch(() => ({}))) as { ids?: number[] }
   if (!Array.isArray(body.ids) || body.ids.length === 0) return c.json({ error: 'ids is required' }, 400)
-  try {
-    return c.json(await ipod.removeTracks(location, body.ids.map(Number)))
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
+  const ids = body.ids.map(Number)
+  // Job result: { removed, missing }.
+  return c.json(startJob(ids.length, (advance) => ipod.removeTracks(location, ids, advance)))
 })
 
 function sanitizeFilename(name: string): string {
@@ -91,6 +94,72 @@ async function saveFolderCover(audioPath: string, targetDir: string): Promise<Co
   }
 }
 
+// Copies tracks off the iPod as a background job (see jobs.ts). Job result: { results } with one
+// { path } or { error } per id, in order.
+async function exportTracksJob(
+  location: ipod.IpodLocation,
+  ids: number[],
+  destDir: string,
+  organize: boolean,
+  advance: (done: number) => void,
+) {
+  const tracks = new Map((await ipod.listTracks(location)).map((t) => [t.id, t]))
+  const destPaths: (string | null)[] = []
+  const items: ipod.ExportItem[] = []
+  for (const id of ids) {
+    const track = tracks.get(id)
+    if (!track) {
+      destPaths.push(null)
+      continue
+    }
+    const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
+    const filename = sanitizeFilename(`${track.artist ?? ''} - ${track.title ?? 'track'}`.replace(/^ - /, '')) + ext
+    // "organize": <destDir>/<artist>/<album>/<file>
+    const targetDir = organize
+      ? path.join(
+          destDir,
+          sanitizeFolderName(track.artist, 'Unknown Artist'),
+          sanitizeFolderName(track.album, 'Unknown Album'),
+        )
+      : destDir
+    await fs.mkdir(targetDir, { recursive: true })
+    const destPath = path.join(targetDir, filename)
+    destPaths.push(destPath)
+    items.push({ trackId: id, destWindowsFilePath: destPath })
+  }
+
+  const exported = await ipod.exportTracks(location, items, advance)
+  const results: { path?: string; error?: string }[] = []
+  const coverTried = new Set<string>() // folders whose Folder.jpg is settled
+  let next = 0
+  for (const destPath of destPaths) {
+    if (destPath === null) {
+      results.push({ error: 'Track not found' })
+      continue
+    }
+    const outcome = exported[next++]
+    if (outcome?.error || !outcome) {
+      results.push({ error: outcome?.error ?? 'Export failed' })
+      continue
+    }
+    results.push({ path: destPath })
+    // Once per folder is enough; keep trying with later tracks only while they have no cover.
+    const dir = path.dirname(destPath)
+    if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
+  }
+  return { results }
+}
+
+app.post('/api/ipod/export', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: number[]; destDir?: string; organize?: boolean }
+  if (!Array.isArray(body.ids) || body.ids.length === 0) return c.json({ error: 'ids is required' }, 400)
+  if (!body.destDir) return c.json({ error: 'destDir is required' }, 400)
+  const ids = body.ids.map(Number)
+  const { destDir, organize } = body
+  return c.json(startJob(ids.length, (advance) => exportTracksJob(location, ids, destDir, !!organize, advance)))
+})
 // Copies several tracks off the iPod in one go. Responds with one { path } or { error } per id, in order.
 app.post('/api/ipod/export', async (c) => {
   const location = await ipod.findIpod()

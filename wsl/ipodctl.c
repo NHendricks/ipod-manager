@@ -222,6 +222,13 @@ static gchar **read_batch_lines(const char *batchfile, GError **error) {
   return lines;
 }
 
+/* Long-running batch commands print a {"progress":<items done>} line after each item (the Node
+   side streams stdout and shows a progress bar); the last line is still the final result. */
+static void report_progress(int done) {
+  printf("{\"progress\":%d}\n", done);
+  fflush(stdout);
+}
+
 static void append_error_entry(GString *buf, const char *msg) {
   g_string_append_c(buf, '{');
   jstr(buf, "error", msg, FALSE);
@@ -304,6 +311,7 @@ static int cmd_add_batch(const char *mountpoint, const char *batchfile) {
       }
     }
     g_strfreev(f);
+    report_progress(entries);
   }
   g_string_append(buf, "]}");
   g_strfreev(lines);
@@ -354,7 +362,10 @@ static int cmd_remove(const char *mountpoint, int count, char **ids) {
     return fail_gerror("Could not write iTunesDB", error);
   }
 
-  for (guint i = 0; i < files->len; i++) g_unlink((const gchar *)g_ptr_array_index(files, i));
+  for (guint i = 0; i < files->len; i++) {
+    g_unlink((const gchar *)g_ptr_array_index(files, i));
+    report_progress((int)i + 1);
+  }
   g_ptr_array_free(files, TRUE);
 
   GString *buf = g_string_new("{");
@@ -441,6 +452,7 @@ static int cmd_extract_batch(const char *mountpoint, const char *batchfile) {
       g_free(realfile);
     }
     g_strfreev(f);
+    report_progress(entries);
   }
   g_string_append(buf, "]}");
   g_strfreev(lines);

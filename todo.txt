@@ -1,5 +1,3 @@
 - support copy folder to ipod (implemented?)
 - convert button to set album/artist from subfolders. User needs to sort mp3 in artist/album/file.mp3
-  Implement logic from ... (nils) for setting id3 tags
-- improve speed when delete or copy from/to ipad
-- show progress when copying / deleting
+  Implement logic from d:\dev\tools.src\tools\src for setting id3 tags - ipod sometimes behaves weird so really use that logic completely

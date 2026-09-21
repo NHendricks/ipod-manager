@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js'
 import type { LocalEntry, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
+import { renderProgress, progressStyles, runJob, type Progress } from './progress'
 
 @customElement('local-pane')
 export class LocalPane extends LitElement {
@@ -12,7 +13,7 @@ export class LocalPane extends LitElement {
   @state() private entries: LocalEntry[] = []
   @state() private error = ''
   @state() private dragOver = false
-  @state() private busy = ''
+  @state() private progress: Progress | null = null
   // Only audio files can be selected; folders just get the keyboard cursor (Enter opens them).
   private audioPaths = new Set<string>()
   private sel = new ListSelection((path) => this.audioPaths.has(path))
@@ -63,7 +64,7 @@ export class LocalPane extends LitElement {
     .dropzone.drop-target { outline: 2px dashed #7c3aed; outline-offset: -2px; }
     .empty, .error { padding: 24px; text-align: center; color: #6d6d80; font-size: .85rem; }
     .error { color: #f77; }
-    .busy { padding: 6px 12px; font-size: .75rem; color: #a78bfa; }
+    ${progressStyles}
   `
 
   connectedCallback() {
@@ -207,27 +208,22 @@ export class LocalPane extends LitElement {
 
   /** Copies iPod tracks into the current folder (drag & drop, or F5 from the iPod pane). */
   async exportTracks(trackIds: number[]): Promise<void> {
-    if (this.busy || trackIds.length === 0) return
+    if (this.progress || trackIds.length === 0) return
+    const label = 'Copying from iPod'
     let failure = ''
+    this.progress = { label, done: 0, total: trackIds.length }
     try {
-      for (let i = 0; i < trackIds.length; i += EXPORT_BATCH_SIZE) {
-        const chunk = trackIds.slice(i, i + EXPORT_BATCH_SIZE)
-        this.busy = `Exporting ${Math.min(i + chunk.length, trackIds.length)}/${trackIds.length}…`
-        try {
-          const res = await fetch('/api/ipod/export', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: chunk, destDir: this.currentDir, organize: this.organizeExports }),
-          })
-          const data = await res.json()
-          if (data.error) failure ||= data.error
-          else failure ||= data.results.find((r: { error?: string }) => r.error)?.error ?? ''
-        } catch {
-          failure ||= 'Backend nicht erreichbar'
-        }
-      }
+      const { results } = await runJob<{ results: { error?: string }[] }>(
+        '/api/ipod/export',
+        { ids: trackIds, destDir: this.currentDir, organize: this.organizeExports },
+        (done, total) => (this.progress = { label, done, total }),
+      )
+      failure = results.find((r) => r.error)?.error ?? ''
+    } catch (err) {
+      // fetch() rejects with a TypeError when the backend can't be reached.
+      failure = err instanceof TypeError ? 'Backend nicht erreichbar' : err instanceof Error ? err.message : String(err)
     } finally {
-      this.busy = ''
+      this.progress = null
     }
     await this.load(this.currentDir)
     if (failure) this.error = failure
@@ -241,7 +237,7 @@ export class LocalPane extends LitElement {
         <h2>Your Computer</h2>
       </header>
       <div class="path" title=${this.currentDir}>${this.currentDir}</div>
-      ${this.busy ? html`<div class="busy">${this.busy}</div>` : ''}
+      ${renderProgress(this.progress)}
       <div
         class=${this.dragOver ? 'dropzone drop-target' : 'dropzone'}
         @dragover=${this.onDragOver}
@@ -290,9 +286,6 @@ export class LocalPane extends LitElement {
     `
   }
 }
-
-// Tracks per backend request when copying off the iPod (each request parses the iTunesDB once).
-const EXPORT_BATCH_SIZE = 25
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
