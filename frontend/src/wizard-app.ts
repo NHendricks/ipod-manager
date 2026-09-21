@@ -13,8 +13,9 @@ export class WizardApp extends LitElement {
   @state() private metadata: FileMetadata | null = null
   @state() private metadataError = ''
   @state() private organizeExports = false
-  // Selection of whichever pane announced one last (the "active" pane); not rendered, so not reactive.
-  private selection: Selection | null = null
+  @state() private status = ''
+  // Selection of whichever pane announced one last (the "active" pane).
+  @state() private selection: Selection | null = null
 
   static styles = css`
     :host {
@@ -32,6 +33,8 @@ export class WizardApp extends LitElement {
     }
     .menubar .hint { margin-left: auto; font-size: .72rem; color: #6d6d80; }
     .menubar button:hover { color: #fff; }
+    .menubar button:disabled { opacity: .45; cursor: default; color: #a0a0b0; }
+    .menubar .status { font-size: .75rem; color: #a78bfa; }
     .menubar button[aria-pressed='true'] { background: #2b2545; border-color: #7c3aed; color: #e8e8ec; }
   `
 
@@ -87,6 +90,29 @@ export class WizardApp extends LitElement {
     }
   }
 
+  /** Saves the embedded cover of each selected local file as Folder.jpg next to it. */
+  private async extractCovers() {
+    const sel = this.selection
+    if (sel?.kind !== 'local' || sel.paths.length === 0) return
+    this.status = 'Extracting covers…'
+    try {
+      const res = await fetch('/api/local/extract-covers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: sel.paths }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        this.status = data.error
+        return
+      }
+      this.status = `Covers: ${data.saved} saved, ${data.exists} already existed, ${data.none} without cover`
+      await this.renderRoot.querySelector<LocalPane>('local-pane')?.refresh()
+    } catch {
+      this.status = 'Backend nicht erreichbar'
+    }
+  }
+
   private closeDialog() {
     this.dialogOpen = false
   }
@@ -126,6 +152,14 @@ export class WizardApp extends LitElement {
         >
           Artist/Album folders: ${this.organizeExports ? 'on' : 'off'}
         </button>
+        <button
+          ?disabled=${this.selection?.kind !== 'local' || this.selection.paths.length === 0}
+          @click=${this.extractCovers}
+          title="Save the embedded cover of the selected files as Folder.jpg in their folder"
+        >
+          Extract Folder.jpg
+        </button>
+        <span class="status">${this.status}</span>
         <span class="hint">F3 metadata · F5 copy to other pane · Del delete from iPod · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
       </div>
       <local-pane .organizeExports=${this.organizeExports} @selection-change=${this.onSelectionChange}></local-pane>

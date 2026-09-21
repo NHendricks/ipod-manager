@@ -1,4 +1,3 @@
-- also get image from mp3 and save it as folder.jpeg
 - support copy folder to ipod (implemented?)
 - convert button to set album/artist from subfolders. User needs to sort mp3 in artist/album/file.mp3
   Implement logic from ... (nils) for setting id3 tags

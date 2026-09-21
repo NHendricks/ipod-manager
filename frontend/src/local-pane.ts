@@ -45,7 +45,15 @@ export class LocalPane extends LitElement {
     li.selected { background: #2b2545; }
     :host(:focus) li.cursor { box-shadow: inset 0 0 0 1px #7c3aed; }
     li.dir { cursor: pointer; color: #cbd5f5; }
-    li .icon { width: 1.2em; text-align: center; opacity: .8; }
+    /* The cover <img> sits on top of the glyph, hidden (but laid out, so lazy loading still fires)
+       until it has loaded - files without embedded art keep showing the glyph. */
+    li .thumb { position: relative; width: 2.2em; height: 2.2em; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+    li .glyph { opacity: .8; }
+    li .thumb img {
+      position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 3px;
+      visibility: hidden;
+    }
+    li .thumb img.loaded { visibility: visible; }
     li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     li .size { color: #6d6d80; font-size: .75rem; flex-shrink: 0; }
     li:not(.audio):not(.dir) { opacity: .45; }
@@ -181,6 +189,11 @@ export class LocalPane extends LitElement {
     await this.exportTracks(JSON.parse(payload) as number[])
   }
 
+  /** Re-reads the current folder (e.g. after files were created by an action outside this pane). */
+  refresh(): Promise<void> {
+    return this.load(this.currentDir)
+  }
+
   /** Copies iPod tracks into the current folder (drag & drop, or F5 from the iPod pane). */
   async exportTracks(trackIds: number[]): Promise<void> {
     if (this.busy || trackIds.length === 0) return
@@ -240,7 +253,18 @@ export class LocalPane extends LitElement {
                       @dragstart=${(e: DragEvent) => this.onDragStart(e, entry)}
                       @click=${(e: MouseEvent) => this.onEntryClick(e, index)}
                     >
-                      <span class="icon">${entry.isDir ? '📁' : entry.isAudio ? '🎵' : '📄'}</span>
+                      <span class="thumb">
+                        <span class="glyph">${entry.isDir ? '📁' : entry.isAudio ? '🎵' : '📄'}</span>
+                        ${entry.isAudio
+                          ? html`<img
+                              loading="lazy"
+                              alt=""
+                              src=${`/api/local/cover?path=${encodeURIComponent(entry.path)}`}
+                              @load=${(e: Event) => (e.target as HTMLImageElement).classList.add('loaded')}
+                              @error=${(e: Event) => (e.target as HTMLImageElement).classList.remove('loaded')}
+                            />`
+                          : ''}
+                      </span>
                       <span class="name">${entry.name}</span>
                       ${entry.isDir ? '' : html`<span class="size">${formatSize(entry.sizeBytes)}</span>`}
                     </li>

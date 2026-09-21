@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import * as ipod from './ipod.js'
 import { defaultLocalDir, listLocalDir } from './local-files.js'
 import { readMetadata } from './metadata.js'
+import { parseFile } from 'music-metadata'
 
 export const app = new Hono()
 
@@ -70,6 +71,23 @@ function sanitizeFolderName(name: string | null, fallback: string): string {
   return (name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim().replace(/[. ]+$/, '') || fallback
 }
 
+type CoverResult = 'saved' | 'exists' | 'none'
+
+// Saves the embedded cover of an audio file as Folder.jpg (Folder.png for PNG art) in targetDir.
+// Never overwrites an existing cover, and never throws - covers are best-effort.
+async function saveFolderCover(audioPath: string, targetDir: string): Promise<CoverResult> {
+  try {
+    const picture = (await parseFile(audioPath)).common.picture?.[0]
+    if (!picture) return 'none'
+    const ext = picture.format === 'image/png' ? 'png' : picture.format === 'image/jpeg' ? 'jpg' : null
+    if (!ext) return 'none'
+    await fs.writeFile(path.join(targetDir, `Folder.${ext}`), picture.data, { flag: 'wx' })
+    return 'saved'
+  } catch (err: any) {
+    return err?.code === 'EEXIST' ? 'exists' : 'none'
+  }
+}
+
 app.post('/api/ipod/tracks/:id/export', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
@@ -93,6 +111,7 @@ app.post('/api/ipod/tracks/:id/export', async (c) => {
     await fs.mkdir(targetDir, { recursive: true })
     const destPath = path.join(targetDir, filename)
     await ipod.exportTrack(location, id, destPath)
+    await saveFolderCover(destPath, targetDir)
     return c.json({ path: destPath })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
@@ -124,6 +143,31 @@ app.get('/api/local/metadata', async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
+})
+
+// Embedded cover art of a local audio file, for thumbnails in the file list (404 if it has none).
+app.get('/api/local/cover', async (c) => {
+  const filePath = c.req.query('path')
+  if (!filePath) return c.json({ error: 'path is required' }, 400)
+  try {
+    const picture = (await parseFile(filePath)).common.picture?.[0]
+    if (!picture) return c.notFound()
+    return c.body(picture.data as Uint8Array<ArrayBuffer>, 200, {
+      'Content-Type': picture.format,
+      'Cache-Control': 'private, max-age=60',
+    })
+  } catch {
+    return c.notFound()
+  }
+})
+
+// Extracts the embedded cover of each given audio file into Folder.jpg in the file's own folder.
+app.post('/api/local/extract-covers', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { paths?: string[] }
+  if (!Array.isArray(body.paths) || body.paths.length === 0) return c.json({ error: 'paths is required' }, 400)
+  const counts = { saved: 0, exists: 0, none: 0 }
+  for (const filePath of body.paths) counts[await saveFolderCover(filePath, path.dirname(filePath))]++
+  return c.json(counts)
 })
 
 app.get('/api/local/list', async (c) => {
