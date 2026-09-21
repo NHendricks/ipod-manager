@@ -31,6 +31,8 @@ export class LocalPane extends LitElement {
       background: none; border: none; color: #a0a0b0; cursor: pointer; font-size: 1rem;
       padding: 2px 8px; border-radius: 6px;
     }
+    button.icon:disabled { opacity: .4; cursor: default; }
+    button.icon.label { font: inherit; font-size: .8rem; white-space: nowrap; }
     button.icon:hover { background: #26262e; color: #fff; }
     .path {
       padding: 6px 12px; font-size: .75rem; color: #6d6d80; border-bottom: 1px solid #201f26;
@@ -224,6 +226,7 @@ export class LocalPane extends LitElement {
     return html`
       <header>
         <button class="icon" ?disabled=${!this.parent} @click=${() => this.parent && this.load(this.parent)} title="Up">⬆</button>
+        <button class="icon label" @click=${() => this.load()} title="Go to the standard Music folder">🎵 Music</button>
         <h2>Your Computer</h2>
       </header>
       <div class="path" title=${this.currentDir}>${this.currentDir}</div>
