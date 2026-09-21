@@ -114,6 +114,13 @@ Buttons in the menubar:
   256×256 cover. A dialog explains the changes and previews them first. **This rewrites the original
   files** – try it on a copy.
 
+In the iPod pane's header:
+
+- **Empty library…** – "resets" the iPod's music: removes every track from the database and deletes
+  every file in `iPod_Control/Music`. Firmware, settings, photos and other files stay. A dialog lists
+  exactly what happens and you have to type `RESET` to confirm. The deleted audio files cannot be
+  restored.
+
 ## Safety
 
 - Before every change the app copies `iPod_Control/iTunes/iTunesDB` to `iTunesDB.previous.bak` (undo

@@ -18,6 +18,7 @@
  *   ipodctl add    <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> [coverfile]
  *   ipodctl add-batch <mountpoint> <batchfile>      (one tab-separated line per track, same columns as "add")
  *   ipodctl remove <mountpoint> <trackId>...
+ *   ipodctl reset  <mountpoint>                     (removes ALL tracks and deletes all files in iPod_Control/Music)
  *   ipodctl extract <mountpoint> <trackId> <destfile>
  *   ipodctl extract-batch <mountpoint> <batchfile>  (one "<trackId>\t<destfile>" line per track)
  */
@@ -378,6 +379,69 @@ static int cmd_remove(const char *mountpoint, int count, char **ids) {
   return 0;
 }
 
+/* reset <mountpoint>: empties the whole library - every track is removed from the database
+   (and all playlists), then every file under iPod_Control/Music is deleted, including files the
+   database no longer knew about (leftovers of interrupted copies). Firmware, settings and other
+   folders stay. As with "remove", the database is written first and files are deleted afterwards. */
+static int cmd_reset(const char *mountpoint) {
+  GError *error = NULL;
+  Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
+  if (!itdb) return fail_gerror("Could not read iTunesDB on this drive", error);
+
+  int removed = 0;
+  GList *tracks = g_list_copy(itdb->tracks); /* itdb_track_unlink modifies itdb->tracks */
+  for (GList *it = tracks; it != NULL; it = it->next) {
+    Itdb_Track *track = (Itdb_Track *)it->data;
+    for (GList *pl = itdb->playlists; pl != NULL; pl = pl->next) {
+      itdb_playlist_remove_track((Itdb_Playlist *)pl->data, track);
+    }
+    itdb_track_unlink(track);
+    itdb_track_free(track);
+    removed++;
+  }
+  g_list_free(tracks);
+
+  if (!itdb_write(itdb, &error)) {
+    itdb_free(itdb);
+    return fail_gerror("Could not write iTunesDB", error);
+  }
+  itdb_free(itdb);
+
+  int files = 0;
+  gchar *music = g_build_filename(mountpoint, "iPod_Control", "Music", NULL);
+  GDir *music_dir = g_dir_open(music, 0, NULL);
+  if (music_dir) {
+    const gchar *sub;
+    while ((sub = g_dir_read_name(music_dir)) != NULL) {
+      gchar *subpath = g_build_filename(music, sub, NULL);
+      GDir *dir = g_file_test(subpath, G_FILE_TEST_IS_DIR) ? g_dir_open(subpath, 0, NULL) : NULL;
+      if (dir) {
+        const gchar *name;
+        while ((name = g_dir_read_name(dir)) != NULL) {
+          gchar *filepath = g_build_filename(subpath, name, NULL);
+          if (g_file_test(filepath, G_FILE_TEST_IS_REGULAR) && g_unlink(filepath) == 0) {
+            files++;
+            report_progress(files);
+          }
+          g_free(filepath);
+        }
+        g_dir_close(dir);
+      }
+      g_free(subpath);
+    }
+    g_dir_close(music_dir);
+  }
+  g_free(music);
+
+  GString *buf = g_string_new("{");
+  jint(buf, "removedTracks", removed, TRUE);
+  jint(buf, "deletedFiles", files, FALSE);
+  g_string_append_c(buf, '}');
+  puts(buf->str);
+  g_string_free(buf, TRUE);
+  return 0;
+}
+
 static int cmd_extract(const char *mountpoint, guint32 trackId, const char *destfile) {
   GError *error = NULL;
   Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
@@ -481,6 +545,7 @@ int main(int argc, char **argv) {
     if (argc < 4) return fail("remove requires mountpoint and at least one trackId");
     return cmd_remove(mountpoint, argc - 3, argv + 3);
   }
+  if (strcmp(cmd, "reset") == 0) return cmd_reset(mountpoint);
   if (strcmp(cmd, "extract") == 0) {
     if (argc < 5) return fail("extract requires mountpoint, trackId and destfile");
     return cmd_extract(mountpoint, (guint32)strtoul(argv[3], NULL, 10), argv[4]);

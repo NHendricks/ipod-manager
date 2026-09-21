@@ -332,3 +332,27 @@ export async function exportTracks(
     return results
   })
 }
+
+/** Number of files under iPod_Control/Music - the progress total for {@link resetLibrary}. */
+export async function countMusicFiles(ipod: IpodLocation): Promise<number> {
+  const music = path.join(ipod.windowsRoot, 'iPod_Control', 'Music')
+  let count = 0
+  for (const sub of await fs.readdir(music).catch(() => [] as string[])) {
+    const entries = await fs.readdir(path.join(music, sub), { withFileTypes: true }).catch(() => [])
+    count += entries.filter((e) => e.isFile()).length
+  }
+  return count
+}
+
+/**
+ * Empties the iPod's library: removes every track from the database and deletes every file in
+ * iPod_Control/Music. Firmware, settings and other folders stay. iTunesDB is backed up first, but
+ * the deleted audio files can't be restored.
+ */
+export async function resetLibrary(
+  ipod: IpodLocation,
+  onProgress?: ProgressCallback,
+): Promise<{ removedTracks: number; deletedFiles: number }> {
+  await backupItunesDb(ipod)
+  return runIpodctl(['reset', ipod.wslMountpoint], onProgress)
+}

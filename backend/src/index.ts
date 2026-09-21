@@ -56,6 +56,18 @@ app.post('/api/ipod/tracks', async (c) => {
   )
 })
 
+// Empties the whole iPod library (all tracks and all audio files). Destructive, so the request has
+// to carry an explicit confirmation token - a stray or replayed call without it does nothing.
+// Job result: { removedTracks, deletedFiles }.
+app.post('/api/ipod/reset', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  const body = (await c.req.json().catch(() => ({}))) as { confirm?: string }
+  if (body.confirm !== 'empty-library') return c.json({ error: 'Confirmation missing' }, 400)
+  const total = await ipod.countMusicFiles(location)
+  return c.json(startJob(Math.max(total, 1), (advance) => ipod.resetLibrary(location, advance)))
+})
+
 app.get('/api/jobs/:id', (c) => {
   const job = getJob(c.req.param('id'))
   return job ? c.json(job) : c.json({ error: 'Unknown job' }, 404)
@@ -162,63 +174,6 @@ app.post('/api/ipod/export', async (c) => {
   const ids = body.ids.map(Number)
   const { destDir, organize } = body
   return c.json(startJob(ids.length, (advance) => exportTracksJob(location, ids, destDir, !!organize, advance)))
-})
-// Copies several tracks off the iPod in one go. Responds with one { path } or { error } per id, in order.
-app.post('/api/ipod/export', async (c) => {
-  const location = await ipod.findIpod()
-  if (!location) return c.json({ error: 'No iPod detected' }, 404)
-  const body = (await c.req.json().catch(() => ({}))) as { ids?: number[]; destDir?: string; organize?: boolean }
-  if (!Array.isArray(body.ids) || body.ids.length === 0) return c.json({ error: 'ids is required' }, 400)
-  if (!body.destDir) return c.json({ error: 'destDir is required' }, 400)
-  try {
-    const tracks = new Map((await ipod.listTracks(location)).map((t) => [t.id, t]))
-    const destPaths: (string | null)[] = []
-    const items: ipod.ExportItem[] = []
-    for (const id of body.ids.map(Number)) {
-      const track = tracks.get(id)
-      if (!track) {
-        destPaths.push(null)
-        continue
-      }
-      const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
-      const filename = sanitizeFilename(`${track.artist ?? ''} - ${track.title ?? 'track'}`.replace(/^ - /, '')) + ext
-      // "organize": <destDir>/<artist>/<album>/<file>
-      const targetDir = body.organize
-        ? path.join(
-            body.destDir,
-            sanitizeFolderName(track.artist, 'Unknown Artist'),
-            sanitizeFolderName(track.album, 'Unknown Album'),
-          )
-        : body.destDir
-      await fs.mkdir(targetDir, { recursive: true })
-      const destPath = path.join(targetDir, filename)
-      destPaths.push(destPath)
-      items.push({ trackId: id, destWindowsFilePath: destPath })
-    }
-
-    const exported = await ipod.exportTracks(location, items)
-    const results: { path?: string; error?: string }[] = []
-    const coverTried = new Set<string>() // folders whose Folder.jpg is settled
-    let next = 0
-    for (const destPath of destPaths) {
-      if (destPath === null) {
-        results.push({ error: 'Track not found' })
-        continue
-      }
-      const outcome = exported[next++]
-      if (outcome?.error || !outcome) {
-        results.push({ error: outcome?.error ?? 'Export failed' })
-        continue
-      }
-      results.push({ path: destPath })
-      // Once per folder is enough; keep trying with later tracks only while they have no cover.
-      const dir = path.dirname(destPath)
-      if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
-    }
-    return c.json({ results })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
 })
 
 app.get('/api/ipod/tracks/:id/metadata', async (c) => {

@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js'
 import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
+import './reset-dialog'
 import { renderProgress, progressStyles, runJob, type Progress } from './progress'
 
 @customElement('ipod-pane')
@@ -14,6 +15,7 @@ export class IpodPane extends LitElement {
   @state() private error = ''
   @state() private dragOver = false
   @state() private progress: Progress | null = null
+  @state() private resetDialogOpen = false
   private pollHandle?: ReturnType<typeof setInterval>
   private polling = false
 
@@ -55,6 +57,12 @@ export class IpodPane extends LitElement {
     .dropzone.drop-target { outline: 2px dashed #7c3aed; outline-offset: -2px; }
     .empty, .error, .disconnected { padding: 24px; text-align: center; color: #6d6d80; font-size: .85rem; }
     .error { color: #f77; }
+    header button.danger {
+      background: none; border: 1px solid #5a2a2a; color: #e88; cursor: pointer; font: inherit; font-size: .75rem;
+      padding: 2px 10px; border-radius: 6px;
+    }
+    header button.danger:hover:not(:disabled) { background: #3a1a1a; color: #faa; }
+    header button.danger:disabled { opacity: .4; cursor: default; }
     ${progressStyles}
   `
 
@@ -116,7 +124,7 @@ export class IpodPane extends LitElement {
 
   private onKeyDown = (e: KeyboardEvent) => {
     // Leave typing in the filter box (and Ctrl+A in it) alone.
-    if (e.composedPath()[0] instanceof HTMLInputElement) return
+    if (this.resetDialogOpen || e.composedPath()[0] instanceof HTMLInputElement) return
     if (this.sel.handleKey(e, this.ids, this.pageSize())) {
       e.preventDefault()
       this.selectionChanged()
@@ -215,6 +223,27 @@ export class IpodPane extends LitElement {
     await this.refreshStatus()
   }
 
+  /** Empties the whole iPod library after the reset dialog was confirmed. */
+  private async resetLibrary(): Promise<void> {
+    this.resetDialogOpen = false
+    if (this.progress) return
+    const label = 'Emptying iPod'
+    let failure = ''
+    this.progress = { label, done: 0, total: 1 }
+    try {
+      await runJob('/api/ipod/reset', { confirm: 'empty-library' }, (done, total) => (this.progress = { label, done, total }))
+    } catch (err) {
+      failure = errorMessage(err)
+    } finally {
+      this.progress = null
+    }
+    this.sel.clear()
+    await this.loadTracks()
+    await this.refreshStatus()
+    this.emitSelection()
+    if (failure) this.error = failure
+  }
+
   /** Deletes tracks from the iPod (database entry and audio file) after asking - this can't be undone. */
   private async deleteTracks(tracks: IpodTrack[]): Promise<void> {
     if (tracks.length === 0 || this.progress) return
@@ -260,6 +289,16 @@ export class IpodPane extends LitElement {
     return html`
       <header>
         <h2>iPod</h2>
+        ${this.status.connected
+          ? html`<button
+              class="danger"
+              ?disabled=${!!this.progress}
+              @click=${() => (this.resetDialogOpen = true)}
+              title="Delete all tracks from the iPod (asks for confirmation)"
+            >
+              Empty library…
+            </button>`
+          : ''}
       </header>
       ${this.status.connected
         ? html`
@@ -282,6 +321,13 @@ export class IpodPane extends LitElement {
           `
         : ''}
       ${renderProgress(this.progress)}
+      ${this.resetDialogOpen
+        ? html`<reset-dialog
+            .trackCount=${this.status.info?.trackCount ?? this.tracks.length}
+            @close=${() => (this.resetDialogOpen = false)}
+            @confirm=${this.resetLibrary}
+          ></reset-dialog>`
+        : ''}
       <div
         class=${this.dragOver ? 'dropzone drop-target' : 'dropzone'}
         @dragover=${this.onDragOver}
