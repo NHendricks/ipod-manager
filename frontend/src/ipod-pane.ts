@@ -1,10 +1,11 @@
 import { LitElement, html, css } from 'lit'
-import { customElement, state } from 'lit/decorators.js'
+import { customElement, property, state } from 'lit/decorators.js'
 import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
 import './reset-dialog'
 import './firmware-dialog'
+import './repair-dialog'
 import { renderProgress, progressStyles, runJob, type Progress } from './progress'
 
 @customElement('ipod-pane')
@@ -18,6 +19,9 @@ export class IpodPane extends LitElement {
   @state() private progress: Progress | null = null
   @state() private resetDialogOpen = false
   @state() private firmwareDialogOpen = false
+  @state() private repairDialogOpen = false
+  /** Also write embedded covers into the iPod's artwork database when copying (set by the app menubar). */
+  @property({ type: Boolean }) artwork = false
   private pollHandle?: ReturnType<typeof setInterval>
   private polling = false
 
@@ -64,6 +68,11 @@ export class IpodPane extends LitElement {
       padding: 2px 10px; border-radius: 6px;
     }
     header button.plain:hover { background: #26262e; color: #fff; }
+    .status button.warn {
+      background: #3a2a1a; border: 1px solid #7a5a2a; color: #f3c98b; cursor: pointer; font: inherit;
+      font-size: .72rem; padding: 0 8px; border-radius: 6px;
+    }
+    .status button.warn:hover { background: #4a3a22; }
     header button.danger {
       background: none; border: 1px solid #5a2a2a; color: #e88; cursor: pointer; font: inherit; font-size: .75rem;
       padding: 2px 10px; border-radius: 6px;
@@ -131,7 +140,7 @@ export class IpodPane extends LitElement {
 
   private onKeyDown = (e: KeyboardEvent) => {
     // Leave typing in the filter box (and Ctrl+A in it) alone.
-    if (this.resetDialogOpen || this.firmwareDialogOpen || e.composedPath()[0] instanceof HTMLInputElement) return
+    if (this.resetDialogOpen || this.firmwareDialogOpen || this.repairDialogOpen || e.composedPath()[0] instanceof HTMLInputElement) return
     if (this.sel.handleKey(e, this.ids, this.pageSize())) {
       e.preventDefault()
       this.selectionChanged()
@@ -217,7 +226,7 @@ export class IpodPane extends LitElement {
     try {
       const { results } = await runJob<{ results: { error?: string }[] }>(
         '/api/ipod/tracks',
-        { filePaths: paths },
+        { filePaths: paths, artwork: this.artwork },
         (done, total) => (this.progress = { label: 'Copying to iPod', done, total }),
       )
       this.error = results.find((r) => r.error)?.error ?? this.error
@@ -319,6 +328,15 @@ export class IpodPane extends LitElement {
             <div class="status">
               <span><strong>${modelKnown ? info?.modelName : 'iPod'}</strong>${modelKnown && info?.generation !== 'Unknown' ? html` (${info?.generation})` : ''}</span>
               <span title=${modelNumber ? '' : NO_MODEL_HINT}>Model: <strong>${modelNumber ?? 'unknown'}</strong></span>
+              ${modelNumber && modelKnown
+                ? ''
+                : html`<button
+                    class="warn"
+                    @click=${() => (this.repairDialogOpen = true)}
+                    title="Without model information the iPod shows 'No Music' after copying"
+                  >
+                    Repair…
+                  </button>`}
               ${sysInfo?.serialNumber ? html`<span>Serial: ${sysInfo.serialNumber}</span>` : ''}
               ${sysInfo?.firmwareVersion ? html`<span>Firmware ${sysInfo.firmwareVersion}</span>` : ''}
               <span>${info?.trackCount ?? this.tracks.length} tracks</span>
@@ -338,6 +356,13 @@ export class IpodPane extends LitElement {
           `
         : ''}
       ${renderProgress(this.progress)}
+      ${this.repairDialogOpen
+        ? html`<repair-dialog
+            .totalBytes=${this.status.info?.totalBytes ?? 0}
+            @repaired=${() => void this.refreshStatus()}
+            @close=${() => (this.repairDialogOpen = false)}
+          ></repair-dialog>`
+        : ''}
       ${this.firmwareDialogOpen
         ? html`<firmware-dialog @close=${() => (this.firmwareDialogOpen = false)}></firmware-dialog>`
         : ''}

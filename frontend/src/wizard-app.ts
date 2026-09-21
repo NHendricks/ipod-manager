@@ -15,6 +15,7 @@ export class WizardApp extends LitElement {
   @state() private metadata: FileMetadata | null = null
   @state() private metadataError = ''
   @state() private organizeExports = false
+  @state() private ipodArtwork = false
   @state() private status = ''
   @state() private tagging = false
   @state() private tagsDialogOpen = false
@@ -51,6 +52,7 @@ export class WizardApp extends LitElement {
     super.connectedCallback()
     try {
       this.organizeExports = localStorage.getItem('organizeExports') === '1'
+      this.ipodArtwork = localStorage.getItem('ipodArtwork') === '1'
       this.albumDelimiter = localStorage.getItem('albumDelimiter') ?? ''
       this.artistDelimiter = localStorage.getItem('artistDelimiter') ?? ''
     } catch {
@@ -98,6 +100,15 @@ export class WizardApp extends LitElement {
     this.organizeExports = !this.organizeExports
     try {
       localStorage.setItem('organizeExports', this.organizeExports ? '1' : '0')
+    } catch {
+      // storage unavailable - the toggle just won't persist
+    }
+  }
+
+  private toggleIpodArtwork() {
+    this.ipodArtwork = !this.ipodArtwork
+    try {
+      localStorage.setItem('ipodArtwork', this.ipodArtwork ? '1' : '0')
     } catch {
       // storage unavailable - the toggle just won't persist
     }
@@ -243,6 +254,13 @@ export class WizardApp extends LitElement {
           Artist/Album folders: ${this.organizeExports ? 'on' : 'off'}
         </button>
         <button
+          aria-pressed=${this.ipodArtwork}
+          @click=${this.toggleIpodArtwork}
+          title="When copying to the iPod, also store each file's embedded cover in the iPod's artwork database (experimental)"
+        >
+          Cover art on iPod: ${this.ipodArtwork ? 'on' : 'off'}
+        </button>
+        <button
           ?disabled=${this.selection?.kind !== 'local' || this.selection.paths.length === 0}
           @click=${this.extractCovers}
           title="Save the embedded cover of the selected files as Folder.jpg in their folder"
@@ -260,7 +278,7 @@ export class WizardApp extends LitElement {
         <span class="hint">F3 metadata · F5 copy to other pane · Del delete from iPod · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
       </div>
       <local-pane .organizeExports=${this.organizeExports} @selection-change=${this.onSelectionChange}></local-pane>
-      <ipod-pane @selection-change=${this.onSelectionChange}></ipod-pane>
+      <ipod-pane .artwork=${this.ipodArtwork} @selection-change=${this.onSelectionChange}></ipod-pane>
       ${this.tagsDialogOpen
         ? html`<tags-dialog
             .preview=${this.tagsPreview}

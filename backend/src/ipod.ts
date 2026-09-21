@@ -35,8 +35,26 @@ let ipodctlQueue: Promise<unknown> = Promise.resolve()
 /** Called with the number of items a batch command has finished so far (see report_progress in ipodctl.c). */
 type ProgressCallback = (done: number) => void
 
+/**
+ * Runs ipodctl; if libgpod can't find the database, the WSL mount is most likely dead (iPod
+ * re-plugged), so remount once and retry. Safe for every command: they all parse the database
+ * first, before copying or deleting anything.
+ */
+async function execWithMountRepair(args: string[], onProgress?: ProgressCallback): Promise<any> {
+  try {
+    return await execIpodctl(args, onProgress)
+  } catch (err) {
+    const letter = /^\/mnt\/([a-z])(?:\/|$)/.exec(args[1] ?? '')?.[1]
+    if (letter && err instanceof IpodError && /Couldn't find an iPod database/.test(err.message)) {
+      await ensureWslMount(letter.toUpperCase(), true)
+      return execIpodctl(args, onProgress)
+    }
+    throw err
+  }
+}
+
 function runIpodctl(args: string[], onProgress?: ProgressCallback): Promise<any> {
-  const result = ipodctlQueue.then(() => execIpodctl(args, onProgress))
+  const result = ipodctlQueue.then(() => execWithMountRepair(args, onProgress))
   ipodctlQueue = result.catch(() => {})
   return result.catch((err) => {
     mountVerifiedAt.clear() // whatever went wrong, re-check the WSL mount on the next request
@@ -101,18 +119,20 @@ export interface IpodLocation {
  * a drive plugged in afterwards (like the iPod) can be invisible at /mnt/<letter> until this
  * runs. Cheap and idempotent, so it's fine to call before every operation.
  */
-async function ensureWslMount(driveLetter: string): Promise<void> {
+async function ensureWslMount(driveLetter: string, force = false): Promise<void> {
   // Starting wsl.exe costs a noticeable fraction of a second and this runs on every API call
   // (the UI polls the status every few seconds), so trust a successful check for a while.
   // runIpodctl clears this on any failure.
   const lastOk = mountVerifiedAt.get(driveLetter)
-  if (lastOk !== undefined && Date.now() - lastOk < MOUNT_CHECK_TTL_MS) return
+  if (!force && lastOk !== undefined && Date.now() - lastOk < MOUNT_CHECK_TTL_MS) return
   const lower = driveLetter.toLowerCase()
+  const remount = `umount -l /mnt/${lower} 2>/dev/null; mkdir -p /mnt/${lower} && mount -t drvfs ${driveLetter.toUpperCase()}: /mnt/${lower}`
   // `mountpoint` alone isn't enough: after the iPod is re-plugged (or drops off mid-operation) WSL
   // keeps a dead 9p mount at /mnt/<letter> that still "is a mountpoint" but fails every access
-  // ("Couldn't find an iPod database"). So probe for the iPod folder, and if that fails, drop the
-  // stale mount and mount the drive again.
-  const script = `test -d /mnt/${lower}/iPod_Control || (umount -l /mnt/${lower} 2>/dev/null; mkdir -p /mnt/${lower} && mount -t drvfs ${driveLetter.toUpperCase()}: /mnt/${lower})`
+  // ("Couldn't find an iPod database"). Probing with `test -d` isn't enough either - WSL caches
+  // directory entries, so it can say yes for a dead mount. Listing the directory forces real I/O
+  // to the device. If that fails, drop the stale mount and mount the drive again.
+  const script = force ? remount : `ls -a /mnt/${lower}/iPod_Control >/dev/null 2>&1 || (${remount})`
   await execFileAsync('wsl.exe', ['-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc', script]).then(
     () => mountVerifiedAt.set(driveLetter, Date.now()),
     () => {
@@ -233,19 +253,26 @@ export async function addTracks(
   ipod: IpodLocation,
   windowsFilePaths: string[],
   onProgress?: ProgressCallback,
+  /** Also put each file's embedded cover into the iPod's artwork database (off unless asked for). */
+  artwork = false,
 ): Promise<AddTrackResult[]> {
   if (windowsFilePaths.length === 0) return []
   await backupItunesDb(ipod) // once per job, so ".previous" undoes the whole job
   const results: AddTrackResult[] = []
   for (let i = 0; i < windowsFilePaths.length; i += WRITE_CHUNK_SIZE) {
     const chunk = windowsFilePaths.slice(i, i + WRITE_CHUNK_SIZE)
-    results.push(...(await addChunk(ipod, chunk, (done) => onProgress?.(i + done))))
+    results.push(...(await addChunk(ipod, chunk, (done) => onProgress?.(i + done), artwork)))
     onProgress?.(i + chunk.length)
   }
   return results
 }
 
-async function addChunk(ipod: IpodLocation, windowsFilePaths: string[], onProgress: ProgressCallback): Promise<AddTrackResult[]> {
+async function addChunk(
+  ipod: IpodLocation,
+  windowsFilePaths: string[],
+  onProgress: ProgressCallback,
+  artwork: boolean,
+): Promise<AddTrackResult[]> {
   return withTempDir(async (dir) => {
     const lines: string[] = []
     for (const [i, filePath] of windowsFilePaths.entries()) {
@@ -254,7 +281,7 @@ async function addChunk(ipod: IpodLocation, windowsFilePaths: string[], onProgre
       const format = tags?.format
 
       // libgpod builds the iPod's thumbnails from an image file, so hand it the embedded cover as a temp file.
-      const picture = common?.picture?.find((p) => p.format === 'image/jpeg' || p.format === 'image/png')
+      const picture = !artwork ? undefined : common?.picture?.find((p) => p.format === 'image/jpeg' || p.format === 'image/png')
       let coverFile = ''
       if (picture) {
         coverFile = path.join(dir, `cover-${i}.${picture.format === 'image/png' ? 'png' : 'jpg'}`)
@@ -362,6 +389,8 @@ export interface IpodSysInfo {
   modelNumber: string | null
   serialNumber: string | null
   firmwareVersion: string | null
+  /** 16 hex digits; an iPod Classic's database must be signed with it. */
+  firewireGuid: string | null
 }
 
 /**
@@ -380,7 +409,100 @@ export async function readSysInfo(ipod: IpodLocation): Promise<IpodSysInfo> {
   return {
     modelNumber: model,
     serialNumber: values.get('pszSerialNumber') || null,
+    firewireGuid: values.get('FirewireGuid')?.replace(/^0x/i, '') || null,
     // "0x02008000 (2.0.0)": the parenthesised part is the version shown to users.
     firmwareVersion: /\(([^)]+)\)/.exec(values.get('visibleBuildID') ?? '')?.[1] ?? (values.get('visibleBuildID') || null),
+  }
+}
+
+// ── Repair: SysInfo + signed database ─────────────────────────────────────────
+// An iPod Classic only accepts an iTunesDB that carries a checksum computed from the device's
+// FireWire GUID; without one it shows "No Music". libgpod signs the database only if it knows the
+// GUID and the model - both normally come from iPod_Control/Device/SysInfo, which iTunes writes on
+// the first sync and which is empty on an iPod that never met iTunes (or was just restored).
+
+export interface ClassicModel {
+  modelNumber: string
+  name: string
+  capacityGB: number
+}
+
+/** iPod Classic models known to libgpod (used to pick the model when SysInfo is empty). */
+export async function listClassicModels(): Promise<ClassicModel[]> {
+  return (await runIpodctl(['models', '-'])).models
+}
+
+/** The iPod's FireWire GUID = the serial number in its USB device path (Windows). */
+export async function getFirewireGuid(ipod: IpodLocation): Promise<string | null> {
+  if (!/^[A-Z]$/.test(ipod.driveLetter)) return null
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `(Get-Partition -DriveLetter ${ipod.driveLetter} | Get-Disk).Path`,
+    ])
+    return /#([0-9a-f]{16})&\d+#/i.exec(stdout)?.[1].toUpperCase() ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Overwrites SysInfo via WSL, so the WSL side (libgpod) sees the new content right away. */
+async function writeSysInfo(ipod: IpodLocation, content: string): Promise<void> {
+  await withTempDir(async (dir) => {
+    const source = path.join(dir, 'SysInfo')
+    await fs.writeFile(source, content)
+    const target = `${ipod.wslMountpoint}iPod_Control/Device/SysInfo`
+    await execFileAsync('wsl.exe', ['-d', WSL_DISTRO, '--', 'cp', windowsToWsl(source), target])
+  })
+}
+
+/** A database is signed if its header (offset 0x30) names a hashing scheme. */
+async function isDatabaseSigned(ipod: IpodLocation): Promise<boolean> {
+  const handle = await fs.open(itunesDbPath(ipod), 'r')
+  try {
+    const header = Buffer.alloc(0x32)
+    await handle.read(header, 0, header.length, 0)
+    return header.readUInt16LE(0x30) !== 0
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * Writes the model and FireWire GUID into SysInfo and re-saves the database so it gets signed.
+ * Every step is undone (SysInfo restored) if libgpod doesn't accept the model or the result is
+ * still unsigned. iTunesDB is backed up first; an existing non-empty SysInfo is kept as SysInfo.bak.
+ */
+export async function repairSysInfo(
+  ipod: IpodLocation,
+  modelNumber: string,
+): Promise<{ modelNumber: string; firewireGuid: string; tracks: number }> {
+  if (!(await listClassicModels()).some((m) => m.modelNumber === modelNumber)) {
+    throw new IpodError(`Unknown iPod model: ${modelNumber}`)
+  }
+  const firewireGuid = await getFirewireGuid(ipod)
+  if (!firewireGuid) throw new IpodError("Could not read the iPod's FireWire GUID from Windows (USB serial number).")
+
+  const sysInfoPath = path.join(ipod.windowsRoot, 'iPod_Control', 'Device', 'SysInfo')
+  const previous = await fs.readFile(sysInfoPath, 'utf8').catch(() => '')
+  if (previous.trim()) await fs.copyFile(sysInfoPath, `${sysInfoPath}.bak`)
+  const kept = previous.split(/\r?\n/).filter((line) => line.trim() && !/^(ModelNumStr|FirewireGuid):/i.test(line))
+  // libgpod drops the first character of ModelNumStr ("MC293" -> model C293).
+  const content = [...kept, `ModelNumStr: M${modelNumber}`, `FirewireGuid: 0x${firewireGuid}`].join('\n') + '\n'
+
+  await writeSysInfo(ipod, content)
+  try {
+    const info = await getInfo(ipod)
+    if (!info.modelName || info.modelName === 'Invalid' || info.modelName === 'Unknown') {
+      throw new IpodError(`libgpod does not recognise model ${modelNumber}`)
+    }
+    await backupItunesDb(ipod)
+    const { tracks } = await runIpodctl(['rewrite', ipod.wslMountpoint])
+    if (!(await isDatabaseSigned(ipod))) throw new IpodError('The database was written but is still not signed.')
+    return { modelNumber, firewireGuid, tracks }
+  } catch (err) {
+    await writeSysInfo(ipod, previous).catch(() => {}) // put the old (possibly empty) SysInfo back
+    throw err
   }
 }

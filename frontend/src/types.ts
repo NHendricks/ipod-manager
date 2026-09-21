@@ -49,6 +49,7 @@ export interface IpodSysInfo {
   modelNumber: string | null // product code, e.g. "MB565"
   serialNumber: string | null
   firmwareVersion: string | null
+  firewireGuid: string | null
 }
 
 export interface IpodStatus {

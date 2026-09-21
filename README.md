@@ -108,6 +108,8 @@ Buttons in the menubar:
 
 - **Artist/Album folders** – when copying *from* the iPod, sort files into `Artist/Album/` folders. Every
   copy off the iPod also saves the embedded cover as `Folder.jpg`.
+- **Cover art on iPod** – off by default. When on, copying to the iPod also stores each file's embedded
+  cover in the iPod's artwork database (experimental, and only works once the iPod's model is known).
 - **Extract Folder.jpg** – saves the embedded cover of the selected mp3s as `Folder.jpg` in their folder.
 - **Set tags from folders…** – for mp3s sorted as `artist/album/file.mp3`, sets title, album and artist
   from the path (with the sorting fixes the iPod needs), removes ID3v1 and embeds `Folder.jpg` as a
@@ -136,6 +138,12 @@ In the iPod pane's header:
 
 ## Troubleshooting
 
+- **The iPod shows "No Music" after copying** – an iPod Classic only accepts a database that is signed
+  with its FireWire GUID. The app can do that only if it knows the iPod's model and GUID, which
+  normally come from `iPod_Control/Device/SysInfo` – empty on an iPod that never synced with iTunes
+  (or was just restored). The iPod pane then shows `Model: unknown` and a **Repair…** button: it
+  reads the GUID from Windows, lets you pick the model, writes `SysInfo` and re-saves the database
+  signed. Afterwards eject the iPod in Windows before unplugging it.
 - **"No iPod detected"** – the iPod must be in disk mode and appear as a drive in Windows Explorer.
 - **"Could not run the iPod helper via WSL"** – WSL2 or the `Ubuntu-24.04` distro is missing (check
   `wsl -l -v`), or `wsl/build/ipodctl` hasn't been built (`npm run build:ipodctl`).

@@ -18,7 +18,9 @@
  *   ipodctl add    <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> [coverfile]
  *   ipodctl add-batch <mountpoint> <batchfile>      (one tab-separated line per track, same columns as "add")
  *   ipodctl remove <mountpoint> <trackId>...
- *   ipodctl reset  <mountpoint>                     (removes ALL tracks and deletes all files in iPod_Control/Music)
+ *   ipodctl rewrite <mountpoint>                    (re-saves the iTunesDB, signed per SysInfo)
+ *   ipodctl models -                                (iPod Classic models known to libgpod)
+ *   ipodctl reset  <mountpoint>                    (removes ALL tracks and deletes all files in iPod_Control/Music)
  *   ipodctl extract <mountpoint> <trackId> <destfile>
  *   ipodctl extract-batch <mountpoint> <batchfile>  (one "<trackId>\t<destfile>" line per track)
  */
@@ -379,6 +381,49 @@ static int cmd_remove(const char *mountpoint, int count, char **ids) {
   return 0;
 }
 
+/* rewrite <mountpoint>: reads the iTunesDB and writes it straight back. Nothing else changes, but
+   the database is written with the current SysInfo, i.e. with the checksum an iPod Classic
+   demands (an unsigned database makes it show "No Music"). */
+static int cmd_rewrite(const char *mountpoint) {
+  GError *error = NULL;
+  Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
+  if (!itdb) return fail_gerror("Could not read iTunesDB on this drive", error);
+  int tracks = (int)g_list_length(itdb->tracks);
+  if (!itdb_write(itdb, &error)) {
+    itdb_free(itdb);
+    return fail_gerror("Could not write iTunesDB", error);
+  }
+  itdb_free(itdb);
+  GString *buf = g_string_new("{");
+  jint(buf, "tracks", tracks, FALSE);
+  g_string_append_c(buf, '}');
+  puts(buf->str);
+  g_string_free(buf, TRUE);
+  return 0;
+}
+
+/* models: lists the iPod Classic models libgpod knows (the family whose database must be signed
+   with the device's FireWire GUID), for choosing the model when SysInfo is empty. */
+static int cmd_models(void) {
+  GString *buf = g_string_new("{\"models\":[");
+  gboolean first = TRUE;
+  for (const Itdb_IpodInfo *t = itdb_info_get_ipod_info_table(); t->model_number != NULL; t++) {
+    const char *gen = itdb_info_get_ipod_generation_string(t->ipod_generation);
+    if (!gen || !g_str_has_prefix(gen, "Classic")) continue;
+    if (!first) g_string_append_c(buf, ',');
+    first = FALSE;
+    g_string_append_c(buf, '{');
+    jstr(buf, "modelNumber", t->model_number, TRUE);
+    jstr(buf, "name", itdb_info_get_ipod_model_name_string(t->ipod_model), TRUE);
+    jint(buf, "capacityGB", (gint64)t->capacity, FALSE);
+    g_string_append_c(buf, '}');
+  }
+  g_string_append(buf, "]}");
+  puts(buf->str);
+  g_string_free(buf, TRUE);
+  return 0;
+}
+
 /* reset <mountpoint>: empties the whole library - every track is removed from the database
    (and all playlists), then every file under iPod_Control/Music is deleted, including files the
    database no longer knew about (leftovers of interrupted copies). Firmware, settings and other
@@ -546,6 +591,8 @@ int main(int argc, char **argv) {
     return cmd_remove(mountpoint, argc - 3, argv + 3);
   }
   if (strcmp(cmd, "reset") == 0) return cmd_reset(mountpoint);
+  if (strcmp(cmd, "rewrite") == 0) return cmd_rewrite(mountpoint);
+  if (strcmp(cmd, "models") == 0) return cmd_models(); /* the mountpoint argument is ignored */
   if (strcmp(cmd, "extract") == 0) {
     if (argc < 5) return fail("extract requires mountpoint, trackId and destfile");
     return cmd_extract(mountpoint, (guint32)strtoul(argv[3], NULL, 10), argv[4]);

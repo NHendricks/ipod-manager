@@ -43,7 +43,7 @@ app.get('/api/ipod/tracks', async (c) => {
 app.post('/api/ipod/tracks', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
-  const body = (await c.req.json().catch(() => ({}))) as { filePaths?: string[] }
+  const body = (await c.req.json().catch(() => ({}))) as { filePaths?: string[]; artwork?: boolean }
   if (!Array.isArray(body.filePaths) || body.filePaths.length === 0) {
     return c.json({ error: 'filePaths is required' }, 400)
   }
@@ -52,7 +52,9 @@ app.post('/api/ipod/tracks', async (c) => {
   if (filePaths.length === 0) return c.json({ error: 'No audio files found in the selection' }, 400)
   // Job result: { results } with one { id, ipodPath, artwork } or { error } per file, in order.
   return c.json(
-    startJob(filePaths.length, async (advance) => ({ results: await ipod.addTracks(location, filePaths, advance) })),
+    startJob(filePaths.length, async (advance) => ({
+      results: await ipod.addTracks(location, filePaths, advance, body.artwork === true),
+    })),
   )
 })
 
@@ -66,6 +68,31 @@ app.post('/api/ipod/reset', async (c) => {
   if (body.confirm !== 'empty-library') return c.json({ error: 'Confirmation missing' }, 400)
   const total = await ipod.countMusicFiles(location)
   return c.json(startJob(Math.max(total, 1), (advance) => ipod.resetLibrary(location, advance)))
+})
+
+// Data for the "repair" dialog: the GUID Windows reports for the connected iPod and the models to choose from.
+app.get('/api/ipod/repair-info', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  try {
+    const [firewireGuid, models] = await Promise.all([ipod.getFirewireGuid(location), ipod.listClassicModels()])
+    return c.json({ firewireGuid, models })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// Writes model + FireWire GUID into SysInfo and re-saves the database signed (see repairSysInfo).
+app.post('/api/ipod/repair', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  const body = (await c.req.json().catch(() => ({}))) as { modelNumber?: string }
+  if (!body.modelNumber) return c.json({ error: 'modelNumber is required' }, 400)
+  try {
+    return c.json(await ipod.repairSysInfo(location, body.modelNumber))
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
 })
 
 app.get('/api/jobs/:id', (c) => {
