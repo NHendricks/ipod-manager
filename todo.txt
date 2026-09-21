@@ -1,2 +1,1 @@
-- add readme. explain that wsl is needed (and how to install it) and onyl windows is supported (if so)
 - add option to reset ipod
