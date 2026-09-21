@@ -356,3 +356,31 @@ export async function resetLibrary(
   await backupItunesDb(ipod)
   return runIpodctl(['reset', ipod.wslMountpoint], onProgress)
 }
+
+export interface IpodSysInfo {
+  /** Product code as printed in the iPod's Settings > About, e.g. "MB565". */
+  modelNumber: string | null
+  serialNumber: string | null
+  firmwareVersion: string | null
+}
+
+/**
+ * Reads iPod_Control/Device/SysInfo ("Key: value" lines written by iTunes). The file is empty on an
+ * iPod that never synced with iTunes, in which case libgpod can't identify the model either.
+ */
+export async function readSysInfo(ipod: IpodLocation): Promise<IpodSysInfo> {
+  const text = await fs.readFile(path.join(ipod.windowsRoot, 'iPod_Control', 'Device', 'SysInfo'), 'utf8').catch(() => '')
+  const values = new Map<string, string>()
+  for (const line of text.split(/\r?\n/)) {
+    const colon = line.indexOf(':')
+    if (colon > 0) values.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim())
+  }
+  // ModelNumStr is stored with a leading "x" standing in for the "M" of the product code (xA623 = MA623).
+  const model = values.get('ModelNumStr')?.replace(/^x/i, 'M') || null
+  return {
+    modelNumber: model,
+    serialNumber: values.get('pszSerialNumber') || null,
+    // "0x02008000 (2.0.0)": the parenthesised part is the version shown to users.
+    firmwareVersion: /\(([^)]+)\)/.exec(values.get('visibleBuildID') ?? '')?.[1] ?? (values.get('visibleBuildID') || null),
+  }
+}

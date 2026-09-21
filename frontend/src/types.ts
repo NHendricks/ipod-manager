@@ -44,10 +44,18 @@ export type Selection =
   | { kind: 'local'; paths: string[]; focus: string | null }
   | { kind: 'ipod'; ids: number[]; focus: number | null }
 
+// From iPod_Control/Device/SysInfo; all null if that file is empty (iPod never synced with iTunes).
+export interface IpodSysInfo {
+  modelNumber: string | null // product code, e.g. "MB565"
+  serialNumber: string | null
+  firmwareVersion: string | null
+}
+
 export interface IpodStatus {
   connected: boolean
   driveLetter?: string
   info?: IpodInfo
+  sysInfo?: IpodSysInfo
   error?: string
 }
 

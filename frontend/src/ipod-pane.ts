@@ -293,6 +293,10 @@ export class IpodPane extends LitElement {
 
   render() {
     const info = this.status.info
+    const sysInfo = this.status.sysInfo
+    // libgpod reports "Invalid"/"Unknown" when it can't identify the model (empty SysInfo).
+    const modelKnown = !!info?.modelName && info.modelName !== 'Invalid'
+    const modelNumber = sysInfo?.modelNumber ?? (info?.modelNumber && info.modelNumber !== 'Invalid' ? info.modelNumber : null)
     return html`
       <header>
         <h2>iPod</h2>
@@ -313,7 +317,10 @@ export class IpodPane extends LitElement {
       ${this.status.connected
         ? html`
             <div class="status">
-              <span><strong>${info?.modelName ?? 'iPod'}</strong> (${info?.generation ?? '?'})</span>
+              <span><strong>${modelKnown ? info?.modelName : 'iPod'}</strong>${modelKnown && info?.generation !== 'Unknown' ? html` (${info?.generation})` : ''}</span>
+              <span title=${modelNumber ? '' : NO_MODEL_HINT}>Model: <strong>${modelNumber ?? 'unknown'}</strong></span>
+              ${sysInfo?.serialNumber ? html`<span>Serial: ${sysInfo.serialNumber}</span>` : ''}
+              ${sysInfo?.firmwareVersion ? html`<span>Firmware ${sysInfo.firmwareVersion}</span>` : ''}
               <span>${info?.trackCount ?? this.tracks.length} tracks</span>
               ${info ? html`<span>${formatSize(info.freeBytes)} free of ${formatSize(info.totalBytes)}</span>` : ''}
             </div>
@@ -386,6 +393,10 @@ export class IpodPane extends LitElement {
     `
   }
 }
+
+const NO_MODEL_HINT =
+  "The iPod has no model information (iPod_Control/Device/SysInfo is empty, which happens if it never synced with iTunes). " +
+  "Its model number is shown in the iPod's Settings > About."
 
 function errorMessage(err: unknown): string {
   // fetch() rejects with a TypeError when the backend can't be reached; anything else carries the server's message.

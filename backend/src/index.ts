@@ -23,8 +23,8 @@ app.get('/api/ipod/status', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ connected: false })
   try {
-    const info = await ipod.getInfo(location)
-    return c.json({ connected: true, driveLetter: location.driveLetter, info })
+    const [info, sysInfo] = await Promise.all([ipod.getInfo(location), ipod.readSysInfo(location)])
+    return c.json({ connected: true, driveLetter: location.driveLetter, info, sysInfo })
   } catch (err: any) {
     return c.json({ connected: true, driveLetter: location.driveLetter, error: err.message })
   }
