@@ -67,7 +67,11 @@ export interface IpodLocation {
  */
 async function ensureWslMount(driveLetter: string): Promise<void> {
   const lower = driveLetter.toLowerCase()
-  const script = `mountpoint -q /mnt/${lower} || (mkdir -p /mnt/${lower} && mount -t drvfs ${driveLetter.toUpperCase()}: /mnt/${lower})`
+  // `mountpoint` alone isn't enough: after the iPod is re-plugged (or drops off mid-operation) WSL
+  // keeps a dead 9p mount at /mnt/<letter> that still "is a mountpoint" but fails every access
+  // ("Couldn't find an iPod database"). So probe for the iPod folder, and if that fails, drop the
+  // stale mount and mount the drive again.
+  const script = `test -d /mnt/${lower}/iPod_Control || (umount -l /mnt/${lower} 2>/dev/null; mkdir -p /mnt/${lower} && mount -t drvfs ${driveLetter.toUpperCase()}: /mnt/${lower})`
   await execFileAsync('wsl.exe', ['-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc', script]).catch(() => {
     // best-effort - if this fails, the ipodctl call below will surface a clear error anyway
   })

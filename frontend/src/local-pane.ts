@@ -90,14 +90,23 @@ export class LocalPane extends LitElement {
       if (!dir) {
         return this.load(data.dir)
       }
+      const previousDir = this.currentDir
       this.currentDir = data.dir
       this.parent = data.parent
-      this.entries = data.entries
+      // ".." is a real (folder) row so arrows/Enter/click treat it like any other folder.
+      const up: LocalEntry[] = data.parent
+        ? [{ name: '..', path: data.parent, isDir: true, sizeBytes: 0, isAudio: false }]
+        : []
+      this.entries = [...up, ...data.entries]
       this.audioPaths = new Set(this.entries.filter((e) => e.isAudio).map((e) => e.path))
       // Only announce if there was something to clear - a reload (e.g. after an export) shouldn't
       // steal "active pane" status from the iPod pane.
       const hadSelection = this.sel.selected.size > 0
       this.sel.clear()
+      // Going up: put the cursor back on the folder we just came out of.
+      if (previousDir && previousDir !== data.dir && data.parent !== previousDir) {
+        this.sel.cursor = this.entries.findIndex((e) => e.path === previousDir)
+      }
       if (hadSelection) this.emitSelection()
       this.error = ''
     } catch {
