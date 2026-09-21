@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as ipod from './ipod.js'
 import { defaultLocalDir, listLocalDir } from './local-files.js'
+import { readMetadata } from './metadata.js'
 
 export const app = new Hono()
 
@@ -84,9 +85,32 @@ app.post('/api/ipod/tracks/:id/export', async (c) => {
   }
 })
 
+app.get('/api/ipod/tracks/:id/metadata', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  const id = Number(c.req.param('id'))
+  try {
+    const track = (await ipod.listTracks(location)).find((t) => t.id === id)
+    if (!track) return c.json({ error: 'Track not found' }, 404)
+    return c.json(await readMetadata(ipod.trackWindowsPath(location, track)))
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // ── Local filesystem ──────────────────────────────────────────────────────────
 
 app.get('/api/local/home', (c) => c.json({ dir: defaultLocalDir() }))
+
+app.get('/api/local/metadata', async (c) => {
+  const filePath = c.req.query('path')
+  if (!filePath) return c.json({ error: 'path is required' }, 400)
+  try {
+    return c.json(await readMetadata(filePath))
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
 
 app.get('/api/local/list', async (c) => {
   const dir = c.req.query('dir') ?? defaultLocalDir()

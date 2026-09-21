@@ -1,10 +1,11 @@
 import { LitElement, html, css } from 'lit'
-import { customElement, state } from 'lit/decorators.js'
-import type { LocalEntry } from './types'
+import { customElement, property, state } from 'lit/decorators.js'
+import type { LocalEntry, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 
 @customElement('local-pane')
 export class LocalPane extends LitElement {
+  @property({ attribute: false }) selection: Selection | null = null
   @state() private currentDir = ''
   @state() private parent: string | null = null
   @state() private entries: LocalEntry[] = []
@@ -37,6 +38,7 @@ export class LocalPane extends LitElement {
       cursor: default; font-size: .85rem; color: #d8d8e0; user-select: none;
     }
     li:hover { background: #1f1f27; }
+    li.selected { background: #2b2545; }
     li.dir { cursor: pointer; color: #cbd5f5; }
     li .icon { width: 1.2em; text-align: center; opacity: .8; }
     li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -76,7 +78,20 @@ export class LocalPane extends LitElement {
   }
 
   private onEntryClick(entry: LocalEntry) {
-    if (entry.isDir) this.load(entry.path)
+    if (entry.isDir) {
+      this.emitSelection(null)
+      this.load(entry.path)
+    } else {
+      this.emitSelection({ kind: 'local', path: entry.path })
+    }
+  }
+
+  private emitSelection(selection: Selection | null) {
+    this.dispatchEvent(new CustomEvent('selection-change', { detail: selection, bubbles: true, composed: true }))
+  }
+
+  private isSelected(entry: LocalEntry): boolean {
+    return this.selection?.kind === 'local' && this.selection.path === entry.path
   }
 
   private onDragStart(e: DragEvent, entry: LocalEntry) {
@@ -140,7 +155,7 @@ export class LocalPane extends LitElement {
                 ${this.entries.map(
                   (entry) => html`
                     <li
-                      class=${[entry.isDir ? 'dir' : '', entry.isAudio ? 'audio' : ''].join(' ')}
+                      class=${[entry.isDir ? 'dir' : '', entry.isAudio ? 'audio' : '', this.isSelected(entry) ? 'selected' : ''].join(' ')}
                       draggable=${!entry.isDir}
                       @dragstart=${(e: DragEvent) => this.onDragStart(e, entry)}
                       @click=${() => this.onEntryClick(entry)}

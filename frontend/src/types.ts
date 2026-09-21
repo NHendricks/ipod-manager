@@ -30,6 +30,17 @@ export interface IpodTrack {
   ipodPath: string
 }
 
+export interface FileMetadata {
+  fileName: string
+  path: string
+  tags: [string, string][]
+  technical: [string, string][]
+  cover: string | null
+}
+
+// What F3 shows metadata for; panes announce it via a bubbling "selection-change" event.
+export type Selection = { kind: 'local'; path: string } | { kind: 'ipod'; id: number }
+
 export interface IpodStatus {
   connected: boolean
   driveLetter?: string

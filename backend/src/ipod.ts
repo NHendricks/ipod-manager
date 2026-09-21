@@ -177,6 +177,11 @@ export async function removeTrack(ipod: IpodLocation, trackId: number): Promise<
   await runIpodctl(['remove', ipod.wslMountpoint, String(trackId)])
 }
 
+/** Windows path of the audio file behind a track (ipodPath looks like ":iPod_Control:Music:F00:ABCD.mp3"). */
+export function trackWindowsPath(ipod: IpodLocation, track: IpodTrack): string {
+  return path.join(ipod.windowsRoot, ...track.ipodPath.split(':').filter(Boolean))
+}
+
 /** Copies a track off the iPod to a local destination file (not a directory). */
 export async function exportTrack(
   ipod: IpodLocation,

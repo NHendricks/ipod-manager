@@ -1,10 +1,11 @@
 import { LitElement, html, css } from 'lit'
-import { customElement, state } from 'lit/decorators.js'
-import type { IpodStatus, IpodTrack } from './types'
+import { customElement, property, state } from 'lit/decorators.js'
+import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 
 @customElement('ipod-pane')
 export class IpodPane extends LitElement {
+  @property({ attribute: false }) selection: Selection | null = null
   @state() private status: IpodStatus = { connected: false }
   @state() private tracks: IpodTrack[] = []
   @state() private filter = ''
@@ -38,6 +39,7 @@ export class IpodPane extends LitElement {
     }
     tbody tr { cursor: default; }
     tbody tr:hover { background: #1f1f27; }
+    tbody tr.selected { background: #2b2545; }
     tbody td { padding: 5px 10px; color: #d8d8e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 1px; }
     td.remove { width: 1.5em; text-align: center; opacity: 0; }
     tbody tr:hover td.remove { opacity: 1; }
@@ -87,6 +89,11 @@ export class IpodPane extends LitElement {
     } catch {
       this.error = 'Backend nicht erreichbar'
     }
+  }
+
+  private selectTrack(track: IpodTrack) {
+    const selection: Selection = { kind: 'ipod', id: track.id }
+    this.dispatchEvent(new CustomEvent('selection-change', { detail: selection, bubbles: true, composed: true }))
   }
 
   private onDragStart(e: DragEvent, track: IpodTrack) {
@@ -216,7 +223,12 @@ export class IpodPane extends LitElement {
                     <tbody>
                       ${this.filteredTracks.map(
                         (track) => html`
-                          <tr draggable="true" @dragstart=${(e: DragEvent) => this.onDragStart(e, track)}>
+                          <tr
+                            class=${this.selection?.kind === 'ipod' && this.selection.id === track.id ? 'selected' : ''}
+                            draggable="true"
+                            @click=${() => this.selectTrack(track)}
+                            @dragstart=${(e: DragEvent) => this.onDragStart(e, track)}
+                          >
                             <td>${track.title ?? '(unknown)'}</td>
                             <td>${track.artist ?? ''}</td>
                             <td>${track.album ?? ''}</td>
