@@ -210,16 +210,18 @@ export class LocalPane extends LitElement {
     if (this.busy || trackIds.length === 0) return
     let failure = ''
     try {
-      for (let i = 0; i < trackIds.length; i++) {
-        this.busy = `Exporting ${i + 1}/${trackIds.length}…`
+      for (let i = 0; i < trackIds.length; i += EXPORT_BATCH_SIZE) {
+        const chunk = trackIds.slice(i, i + EXPORT_BATCH_SIZE)
+        this.busy = `Exporting ${Math.min(i + chunk.length, trackIds.length)}/${trackIds.length}…`
         try {
-          const res = await fetch(`/api/ipod/tracks/${trackIds[i]}/export`, {
+          const res = await fetch('/api/ipod/export', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ destDir: this.currentDir, organize: this.organizeExports }),
+            body: JSON.stringify({ ids: chunk, destDir: this.currentDir, organize: this.organizeExports }),
           })
           const data = await res.json()
           if (data.error) failure ||= data.error
+          else failure ||= data.results.find((r: { error?: string }) => r.error)?.error ?? ''
         } catch {
           failure ||= 'Backend nicht erreichbar'
         }
@@ -288,6 +290,9 @@ export class LocalPane extends LitElement {
     `
   }
 }
+
+// Tracks per backend request when copying off the iPod (each request parses the iTunesDB once).
+const EXPORT_BATCH_SIZE = 25
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

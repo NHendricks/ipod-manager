@@ -9,12 +9,17 @@
  * ID3/MP4 tag reading happens on the Node side (music-metadata); this tool only talks to
  * libgpod, so tag values for "add" arrive as plain argv strings.
  *
+ * Parsing the iTunesDB and (for writes) writing it back dominate the run time of every command,
+ * so the *-batch commands (and "remove" with several ids) handle many tracks per invocation.
+ *
  * Commands:
  *   ipodctl info   <mountpoint>
  *   ipodctl list   <mountpoint>
  *   ipodctl add    <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> [coverfile]
- *   ipodctl remove <mountpoint> <trackId>
+ *   ipodctl add-batch <mountpoint> <batchfile>      (one tab-separated line per track, same columns as "add")
+ *   ipodctl remove <mountpoint> <trackId>...
  *   ipodctl extract <mountpoint> <trackId> <destfile>
+ *   ipodctl extract-batch <mountpoint> <batchfile>  (one "<trackId>\t<destfile>" line per track)
  */
 
 #include <gpod/itdb.h>
@@ -157,49 +162,90 @@ static gchar *opt(const char *s) {
   return (s && s[0] != '\0') ? g_strdup(s) : NULL;
 }
 
+/* Fields of one track to add, in the order of the CLI arguments / batch-file columns:
+   srcfile, title, artist, album, genre, trackNr, year, durationMs, bitrate, samplerate,
+   filetype, coverfile (any of them may be empty except srcfile). */
+#define ADD_FIELDS 12
+
+/* Copies one file onto the iPod and adds it to the in-memory database (the caller writes the
+   iTunesDB once it is done - writing is by far the slowest step, so batches share one write). */
+static Itdb_Track *add_track_to_db(Itdb_iTunesDB *itdb, char *const *f, gboolean *artwork, GError **error) {
+  const char *srcfile = f[0];
+  *artwork = FALSE;
+
+  if (access(srcfile, R_OK) != 0) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_ACCES, "Source file is not readable");
+    return NULL;
+  }
+
+  Itdb_Track *track = itdb_track_new();
+  track->title = opt(f[1]);
+  if (!track->title) track->title = g_path_get_basename(srcfile);
+  track->artist = opt(f[2]);
+  track->album = opt(f[3]);
+  track->genre = opt(f[4]);
+  track->track_nr = atoi(f[5]);
+  track->year = atoi(f[6]);
+  track->tracklen = atoi(f[7]);
+  track->bitrate = atoi(f[8]);
+  track->samplerate = (guint16)atoi(f[9]);
+  track->filetype = g_strdup(f[10][0] ? f[10] : guess_filetype(srcfile));
+
+  itdb_track_add(itdb, track, -1);
+  itdb_playlist_add_track(itdb_playlist_mpl(itdb), track, -1);
+
+  if (!itdb_cp_track_to_ipod(track, srcfile, error)) {
+    itdb_track_unlink(track);
+    itdb_track_free(track);
+    return NULL;
+  }
+
+  /* Optional cover image (a jpg/png file extracted by the Node side). Best-effort: a model
+     without artwork support or an unreadable image must not fail the whole copy. */
+  if (f[11][0] != '\0' && itdb_device_supports_artwork(itdb->device)) {
+    *artwork = itdb_track_set_thumbnails(track, f[11]);
+  }
+  return track;
+}
+
+/* Reads a batch file into its lines (a trailing "\r" is dropped; tabs are kept - they separate
+   the columns, and empty trailing columns must survive). Callers skip empty lines. */
+static gchar **read_batch_lines(const char *batchfile, GError **error) {
+  gchar *contents = NULL;
+  if (!g_file_get_contents(batchfile, &contents, NULL, error)) return NULL;
+  gchar **lines = g_strsplit(contents, "\n", -1);
+  g_free(contents);
+  for (gchar **l = lines; *l; l++) {
+    size_t len = strlen(*l);
+    if (len > 0 && (*l)[len - 1] == '\r') (*l)[len - 1] = '\0';
+  }
+  return lines;
+}
+
+static void append_error_entry(GString *buf, const char *msg) {
+  g_string_append_c(buf, '{');
+  jstr(buf, "error", msg, FALSE);
+  g_string_append_c(buf, '}');
+}
+
 static int cmd_add(int argc, char **argv) {
-  /* argv: add <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> */
+  /* argv: add <mountpoint> <srcfile> <title> <artist> <album> <genre> <trackNr> <year> <durationMs> <bitrate> <samplerate> <filetype> [coverfile] */
   if (argc < 14) return fail("add requires mountpoint, srcfile, title, artist, album, genre, trackNr, year, durationMs, bitrate, samplerate, filetype");
   const char *mountpoint = argv[2];
-  const char *srcfile = argv[3];
 
   GError *error = NULL;
   Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
   if (!itdb) return fail_gerror("Could not read iTunesDB on this drive", error);
 
-  if (access(srcfile, R_OK) != 0) {
-    itdb_free(itdb);
-    return fail("Source file is not readable");
-  }
+  char *fields[ADD_FIELDS];
+  for (int i = 0; i < 11; i++) fields[i] = argv[3 + i];
+  fields[11] = argc > 14 ? argv[14] : (char *)"";
 
-  Itdb_Track *track = itdb_track_new();
-  track->title = opt(argv[4]);
-  if (!track->title) track->title = g_path_get_basename(srcfile);
-  track->artist = opt(argv[5]);
-  track->album = opt(argv[6]);
-  track->genre = opt(argv[7]);
-  track->track_nr = atoi(argv[8]);
-  track->year = atoi(argv[9]);
-  track->tracklen = atoi(argv[10]);
-  track->bitrate = atoi(argv[11]);
-  track->samplerate = (guint16)atoi(argv[12]);
-  track->filetype = g_strdup(argv[13][0] ? argv[13] : guess_filetype(srcfile));
-
-  itdb_track_add(itdb, track, -1);
-  itdb_playlist_add_track(itdb_playlist_mpl(itdb), track, -1);
-
-  if (!itdb_cp_track_to_ipod(track, srcfile, &error)) {
-    itdb_track_unlink(track);
-    itdb_track_free(track);
+  gboolean artwork;
+  Itdb_Track *track = add_track_to_db(itdb, fields, &artwork, &error);
+  if (!track) {
     itdb_free(itdb);
     return fail_gerror("Could not copy file onto the iPod", error);
-  }
-
-  /* Optional cover image (argv[14], a jpg/png file extracted by the Node side). Best-effort:
-     a model without artwork support or an unreadable image must not fail the whole copy. */
-  gboolean artwork = FALSE;
-  if (argc > 14 && argv[14][0] != '\0' && itdb_device_supports_artwork(itdb->device)) {
-    artwork = itdb_track_set_thumbnails(track, argv[14]);
   }
 
   if (!itdb_write(itdb, &error)) {
@@ -218,37 +264,105 @@ static int cmd_add(int argc, char **argv) {
   return 0;
 }
 
-static int cmd_remove(const char *mountpoint, guint32 trackId) {
+/* add-batch <mountpoint> <batchfile>: one line per track, ADD_FIELDS tab-separated columns.
+   Parses the database once and writes it once, however many tracks there are. Prints
+   {"results":[{"id":..,"artwork":..,"ipodPath":..} | {"error":..}, ...]} in input order. */
+static int cmd_add_batch(const char *mountpoint, const char *batchfile) {
   GError *error = NULL;
+  gchar **lines = read_batch_lines(batchfile, &error);
+  if (!lines) return fail_gerror("Could not read the batch file", error);
+
   Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
-  if (!itdb) return fail_gerror("Could not read iTunesDB on this drive", error);
-
-  Itdb_Track *track = itdb_track_by_id(itdb, trackId);
-  if (!track) {
-    itdb_free(itdb);
-    return fail("Track not found");
+  if (!itdb) {
+    g_strfreev(lines);
+    return fail_gerror("Could not read iTunesDB on this drive", error);
   }
 
-  gchar *realfile = itdb_filename_on_ipod(track);
-  /* itdb_playlist_remove_track(NULL, ...) only detaches from the master playlist, so walk
-     every playlist explicitly - otherwise a playlist could keep a dangling pointer. */
-  for (GList *pl = itdb->playlists; pl != NULL; pl = pl->next) {
-    itdb_playlist_remove_track((Itdb_Playlist *)pl->data, track);
-  }
-  itdb_track_unlink(track);
-  itdb_track_free(track);
+  GString *buf = g_string_new("{\"results\":[");
+  int added = 0, entries = 0;
+  for (gchar **l = lines; *l; l++) {
+    if ((*l)[0] == '\0') continue;
+    if (entries++ > 0) g_string_append_c(buf, ',');
 
-  if (realfile) {
-    g_unlink(realfile);
-    g_free(realfile);
+    gchar **f = g_strsplit(*l, "\t", -1);
+    if (g_strv_length(f) < ADD_FIELDS) {
+      append_error_entry(buf, "Malformed batch line");
+    } else {
+      GError *track_error = NULL;
+      gboolean artwork;
+      Itdb_Track *track = add_track_to_db(itdb, f, &artwork, &track_error);
+      if (!track) {
+        append_error_entry(buf, track_error && track_error->message ? track_error->message : "Could not copy file onto the iPod");
+        if (track_error) g_error_free(track_error);
+      } else {
+        added++;
+        g_string_append_c(buf, '{');
+        jint(buf, "id", track->id, TRUE);
+        jint(buf, "artwork", artwork ? 1 : 0, TRUE);
+        jstr(buf, "ipodPath", track->ipod_path, FALSE);
+        g_string_append_c(buf, '}');
+      }
+    }
+    g_strfreev(f);
   }
+  g_string_append(buf, "]}");
+  g_strfreev(lines);
 
-  if (!itdb_write(itdb, &error)) {
+  if (added > 0 && !itdb_write(itdb, &error)) {
+    g_string_free(buf, TRUE);
     itdb_free(itdb);
     return fail_gerror("Could not write iTunesDB", error);
   }
 
-  puts("{\"removed\":true}");
+  puts(buf->str);
+  g_string_free(buf, TRUE);
+  itdb_free(itdb);
+  return 0;
+}
+
+/* remove <mountpoint> <trackId>...: removes any number of tracks with a single database write.
+   The audio files are deleted only after the database was written successfully, so an
+   interruption can leave orphaned files but never entries that point at missing files. */
+static int cmd_remove(const char *mountpoint, int count, char **ids) {
+  GError *error = NULL;
+  Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
+  if (!itdb) return fail_gerror("Could not read iTunesDB on this drive", error);
+
+  GPtrArray *files = g_ptr_array_new_with_free_func(g_free);
+  int removed = 0, missing = 0;
+  for (int i = 0; i < count; i++) {
+    Itdb_Track *track = itdb_track_by_id(itdb, (guint32)strtoul(ids[i], NULL, 10));
+    if (!track) {
+      missing++;
+      continue;
+    }
+    gchar *realfile = itdb_filename_on_ipod(track);
+    if (realfile) g_ptr_array_add(files, realfile);
+    /* itdb_playlist_remove_track(NULL, ...) only detaches from the master playlist, so walk
+       every playlist explicitly - otherwise a playlist could keep a dangling pointer. */
+    for (GList *pl = itdb->playlists; pl != NULL; pl = pl->next) {
+      itdb_playlist_remove_track((Itdb_Playlist *)pl->data, track);
+    }
+    itdb_track_unlink(track);
+    itdb_track_free(track);
+    removed++;
+  }
+
+  if (removed > 0 && !itdb_write(itdb, &error)) {
+    g_ptr_array_free(files, TRUE);
+    itdb_free(itdb);
+    return fail_gerror("Could not write iTunesDB", error);
+  }
+
+  for (guint i = 0; i < files->len; i++) g_unlink((const gchar *)g_ptr_array_index(files, i));
+  g_ptr_array_free(files, TRUE);
+
+  GString *buf = g_string_new("{");
+  jint(buf, "removed", removed, TRUE);
+  jint(buf, "missing", missing, FALSE);
+  g_string_append_c(buf, '}');
+  puts(buf->str);
+  g_string_free(buf, TRUE);
   itdb_free(itdb);
   return 0;
 }
@@ -286,9 +400,60 @@ static int cmd_extract(const char *mountpoint, guint32 trackId, const char *dest
   return 0;
 }
 
+/* extract-batch <mountpoint> <batchfile>: one "<trackId>\t<destfile>" line per track; the
+   database is parsed once. Prints {"results":[{"destfile":..} | {"error":..}, ...]}. */
+static int cmd_extract_batch(const char *mountpoint, const char *batchfile) {
+  GError *error = NULL;
+  gchar **lines = read_batch_lines(batchfile, &error);
+  if (!lines) return fail_gerror("Could not read the batch file", error);
+
+  Itdb_iTunesDB *itdb = itdb_parse(mountpoint, &error);
+  if (!itdb) {
+    g_strfreev(lines);
+    return fail_gerror("Could not read iTunesDB on this drive", error);
+  }
+
+  GString *buf = g_string_new("{\"results\":[");
+  int entries = 0;
+  for (gchar **l = lines; *l; l++) {
+    if ((*l)[0] == '\0') continue;
+    if (entries++ > 0) g_string_append_c(buf, ',');
+
+    gchar **f = g_strsplit(*l, "\t", 2);
+    if (g_strv_length(f) < 2) {
+      append_error_entry(buf, "Malformed batch line");
+    } else {
+      Itdb_Track *track = itdb_track_by_id(itdb, (guint32)strtoul(f[0], NULL, 10));
+      gchar *realfile = track ? itdb_filename_on_ipod(track) : NULL;
+      GError *copy_error = NULL;
+      if (!track) {
+        append_error_entry(buf, "Track not found");
+      } else if (!realfile) {
+        append_error_entry(buf, "Could not resolve track path on the iPod");
+      } else if (!itdb_cp(realfile, f[1], &copy_error)) {
+        append_error_entry(buf, copy_error && copy_error->message ? copy_error->message : "Could not copy file from the iPod");
+      } else {
+        g_string_append_c(buf, '{');
+        jstr(buf, "destfile", f[1], FALSE);
+        g_string_append_c(buf, '}');
+      }
+      if (copy_error) g_error_free(copy_error);
+      g_free(realfile);
+    }
+    g_strfreev(f);
+  }
+  g_string_append(buf, "]}");
+  g_strfreev(lines);
+
+  puts(buf->str);
+  g_string_free(buf, TRUE);
+  itdb_free(itdb);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) {
-    return fail("Usage: ipodctl <info|list|add|remove|extract> <mountpoint> [...]");
+    return fail("Usage: ipodctl <info|list|add|add-batch|remove|extract|extract-batch> <mountpoint> [...]");
   }
   const char *cmd = argv[1];
   const char *mountpoint = argv[2];
@@ -296,13 +461,21 @@ int main(int argc, char **argv) {
   if (strcmp(cmd, "info") == 0) return cmd_info(mountpoint);
   if (strcmp(cmd, "list") == 0) return cmd_list(mountpoint);
   if (strcmp(cmd, "add") == 0) return cmd_add(argc, argv);
+  if (strcmp(cmd, "add-batch") == 0) {
+    if (argc < 4) return fail("add-batch requires mountpoint and batchfile");
+    return cmd_add_batch(mountpoint, argv[3]);
+  }
   if (strcmp(cmd, "remove") == 0) {
-    if (argc < 4) return fail("remove requires mountpoint and trackId");
-    return cmd_remove(mountpoint, (guint32)strtoul(argv[3], NULL, 10));
+    if (argc < 4) return fail("remove requires mountpoint and at least one trackId");
+    return cmd_remove(mountpoint, argc - 3, argv + 3);
   }
   if (strcmp(cmd, "extract") == 0) {
     if (argc < 5) return fail("extract requires mountpoint, trackId and destfile");
     return cmd_extract(mountpoint, (guint32)strtoul(argv[3], NULL, 10), argv[4]);
+  }
+  if (strcmp(cmd, "extract-batch") == 0) {
+    if (argc < 4) return fail("extract-batch requires mountpoint and batchfile");
+    return cmd_extract_batch(mountpoint, argv[3]);
   }
   return fail("Unknown command");
 }

@@ -41,22 +41,25 @@ app.get('/api/ipod/tracks', async (c) => {
 app.post('/api/ipod/tracks', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
-  const body = (await c.req.json().catch(() => ({}))) as { filePath?: string }
-  if (!body.filePath) return c.json({ error: 'filePath is required' }, 400)
+  const body = (await c.req.json().catch(() => ({}))) as { filePaths?: string[] }
+  if (!Array.isArray(body.filePaths) || body.filePaths.length === 0) {
+    return c.json({ error: 'filePaths is required' }, 400)
+  }
   try {
-    return c.json(await ipod.addTrack(location, body.filePath))
+    // One result per file, in order: { id, ipodPath, artwork } or { error }.
+    return c.json({ results: await ipod.addTracks(location, body.filePaths) })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
 })
 
-app.delete('/api/ipod/tracks/:id', async (c) => {
+app.post('/api/ipod/tracks/delete', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
-  const id = Number(c.req.param('id'))
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: number[] }
+  if (!Array.isArray(body.ids) || body.ids.length === 0) return c.json({ error: 'ids is required' }, 400)
   try {
-    await ipod.removeTrack(location, id)
-    return c.json({ removed: true })
+    return c.json(await ipod.removeTracks(location, body.ids.map(Number)))
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -88,31 +91,59 @@ async function saveFolderCover(audioPath: string, targetDir: string): Promise<Co
   }
 }
 
-app.post('/api/ipod/tracks/:id/export', async (c) => {
+// Copies several tracks off the iPod in one go. Responds with one { path } or { error } per id, in order.
+app.post('/api/ipod/export', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
-  const id = Number(c.req.param('id'))
-  const body = (await c.req.json().catch(() => ({}))) as { destDir?: string; organize?: boolean }
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: number[]; destDir?: string; organize?: boolean }
+  if (!Array.isArray(body.ids) || body.ids.length === 0) return c.json({ error: 'ids is required' }, 400)
   if (!body.destDir) return c.json({ error: 'destDir is required' }, 400)
   try {
-    const tracks = await ipod.listTracks(location)
-    const track = tracks.find((t) => t.id === id)
-    if (!track) return c.json({ error: 'Track not found' }, 404)
-    const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
-    const filename = sanitizeFilename(`${track.artist ?? ''} - ${track.title ?? 'track'}`.replace(/^ - /, '')) + ext
-    // "organize": <destDir>/<artist>/<album>/<file>
-    const targetDir = body.organize
-      ? path.join(
-          body.destDir,
-          sanitizeFolderName(track.artist, 'Unknown Artist'),
-          sanitizeFolderName(track.album, 'Unknown Album'),
-        )
-      : body.destDir
-    await fs.mkdir(targetDir, { recursive: true })
-    const destPath = path.join(targetDir, filename)
-    await ipod.exportTrack(location, id, destPath)
-    await saveFolderCover(destPath, targetDir)
-    return c.json({ path: destPath })
+    const tracks = new Map((await ipod.listTracks(location)).map((t) => [t.id, t]))
+    const destPaths: (string | null)[] = []
+    const items: ipod.ExportItem[] = []
+    for (const id of body.ids.map(Number)) {
+      const track = tracks.get(id)
+      if (!track) {
+        destPaths.push(null)
+        continue
+      }
+      const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
+      const filename = sanitizeFilename(`${track.artist ?? ''} - ${track.title ?? 'track'}`.replace(/^ - /, '')) + ext
+      // "organize": <destDir>/<artist>/<album>/<file>
+      const targetDir = body.organize
+        ? path.join(
+            body.destDir,
+            sanitizeFolderName(track.artist, 'Unknown Artist'),
+            sanitizeFolderName(track.album, 'Unknown Album'),
+          )
+        : body.destDir
+      await fs.mkdir(targetDir, { recursive: true })
+      const destPath = path.join(targetDir, filename)
+      destPaths.push(destPath)
+      items.push({ trackId: id, destWindowsFilePath: destPath })
+    }
+
+    const exported = await ipod.exportTracks(location, items)
+    const results: { path?: string; error?: string }[] = []
+    const coverTried = new Set<string>() // folders whose Folder.jpg is settled
+    let next = 0
+    for (const destPath of destPaths) {
+      if (destPath === null) {
+        results.push({ error: 'Track not found' })
+        continue
+      }
+      const outcome = exported[next++]
+      if (outcome?.error || !outcome) {
+        results.push({ error: outcome?.error ?? 'Export failed' })
+        continue
+      }
+      results.push({ path: destPath })
+      // Once per folder is enough; keep trying with later tracks only while they have no cover.
+      const dir = path.dirname(destPath)
+      if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
+    }
+    return c.json({ results })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }

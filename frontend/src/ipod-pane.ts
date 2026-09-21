@@ -14,6 +14,7 @@ export class IpodPane extends LitElement {
   @state() private dragOver = false
   @state() private importProgress = ''
   private pollHandle?: ReturnType<typeof setInterval>
+  private polling = false
 
   static styles = css`
     :host { display: flex; flex-direction: column; height: 100%; min-height: 0; background: #16161a; outline: none; }
@@ -71,6 +72,10 @@ export class IpodPane extends LitElement {
   }
 
   private async refreshStatus() {
+    // The backend runs iPod commands one at a time, so during a long copy/delete a poll would just
+    // wait in line - don't stack up more of them.
+    if (this.polling) return
+    this.polling = true
     try {
       const res = await fetch('/api/ipod/status')
       const data: IpodStatus = await res.json()
@@ -80,6 +85,8 @@ export class IpodPane extends LitElement {
       if (!data.connected) this.tracks = []
     } catch {
       this.status = { connected: false }
+    } finally {
+      this.polling = false
     }
   }
 
@@ -190,16 +197,19 @@ export class IpodPane extends LitElement {
   async importFiles(paths: string[]): Promise<void> {
     if (paths.length === 0 || !this.status.connected || this.importProgress) return
 
-    for (let i = 0; i < paths.length; i++) {
-      this.importProgress = `Importing ${i + 1}/${paths.length}…`
+    // Chunks share one iTunesDB read+write on the backend (the slow part), while still giving progress.
+    for (let i = 0; i < paths.length; i += BATCH_SIZE) {
+      const chunk = paths.slice(i, i + BATCH_SIZE)
+      this.importProgress = `Importing ${Math.min(i + chunk.length, paths.length)}/${paths.length}…`
       try {
         const res = await fetch('/api/ipod/tracks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath: paths[i] }),
+          body: JSON.stringify({ filePaths: chunk }),
         })
         const data = await res.json()
         if (data.error) this.error = data.error
+        else this.error = data.results.find((r: { error?: string }) => r.error)?.error ?? this.error
       } catch {
         this.error = 'Backend nicht erreichbar'
       }
@@ -217,10 +227,15 @@ export class IpodPane extends LitElement {
     if (!confirm(`Delete ${what} from the iPod? The audio files are removed and this can't be undone.`)) return
 
     let failure = ''
-    for (let i = 0; i < tracks.length; i++) {
-      this.importProgress = `Deleting ${i + 1}/${tracks.length}…`
+    for (let i = 0; i < tracks.length; i += BATCH_SIZE) {
+      const chunk = tracks.slice(i, i + BATCH_SIZE)
+      this.importProgress = `Deleting ${Math.min(i + chunk.length, tracks.length)}/${tracks.length}…`
       try {
-        const res = await fetch(`/api/ipod/tracks/${tracks[i].id}`, { method: 'DELETE' })
+        const res = await fetch('/api/ipod/tracks/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: chunk.map((t) => t.id) }),
+        })
         const data = await res.json()
         if (data.error) failure ||= data.error
       } catch {
@@ -320,6 +335,9 @@ export class IpodPane extends LitElement {
     `
   }
 }
+
+// Tracks per backend request when copying to / deleting from the iPod.
+const BATCH_SIZE = 25
 
 function formatSize(bytes: number): string {
   const gb = bytes / 1024 / 1024 / 1024

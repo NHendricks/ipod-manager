@@ -27,7 +27,21 @@ function windowsToWsl(windowsPath: string): string {
   return `/mnt/${drive.toLowerCase()}/${rest}`
 }
 
-async function runIpodctl(args: string[]): Promise<any> {
+// Every ipodctl call goes through this queue: libgpod isn't safe against two processes touching
+// the same iTunesDB at once (a status poll parsing the database while a batch rewrites it would
+// read a half-written file), so they run strictly one after another.
+let ipodctlQueue: Promise<unknown> = Promise.resolve()
+
+function runIpodctl(args: string[]): Promise<any> {
+  const result = ipodctlQueue.then(() => execIpodctl(args))
+  ipodctlQueue = result.catch(() => {})
+  return result.catch((err) => {
+    mountVerifiedAt.clear() // whatever went wrong, re-check the WSL mount on the next request
+    throw err
+  })
+}
+
+async function execIpodctl(args: string[]): Promise<any> {
   const ipodctl = windowsToWsl(IPODCTL_WINDOWS_PATH)
   let stdout: string
   try {
@@ -66,16 +80,27 @@ export interface IpodLocation {
  * runs. Cheap and idempotent, so it's fine to call before every operation.
  */
 async function ensureWslMount(driveLetter: string): Promise<void> {
+  // Starting wsl.exe costs a noticeable fraction of a second and this runs on every API call
+  // (the UI polls the status every few seconds), so trust a successful check for a while.
+  // runIpodctl clears this on any failure.
+  const lastOk = mountVerifiedAt.get(driveLetter)
+  if (lastOk !== undefined && Date.now() - lastOk < MOUNT_CHECK_TTL_MS) return
   const lower = driveLetter.toLowerCase()
   // `mountpoint` alone isn't enough: after the iPod is re-plugged (or drops off mid-operation) WSL
   // keeps a dead 9p mount at /mnt/<letter> that still "is a mountpoint" but fails every access
   // ("Couldn't find an iPod database"). So probe for the iPod folder, and if that fails, drop the
   // stale mount and mount the drive again.
   const script = `test -d /mnt/${lower}/iPod_Control || (umount -l /mnt/${lower} 2>/dev/null; mkdir -p /mnt/${lower} && mount -t drvfs ${driveLetter.toUpperCase()}: /mnt/${lower})`
-  await execFileAsync('wsl.exe', ['-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc', script]).catch(() => {
-    // best-effort - if this fails, the ipodctl call below will surface a clear error anyway
-  })
+  await execFileAsync('wsl.exe', ['-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc', script]).then(
+    () => mountVerifiedAt.set(driveLetter, Date.now()),
+    () => {
+      // best-effort - if this fails, the ipodctl call below will surface a clear error anyway
+    },
+  )
 }
+
+const MOUNT_CHECK_TTL_MS = 30_000
+const mountVerifiedAt = new Map<string, number>()
 
 /** Scans drive letters for a mounted iPod (identified by its iPod_Control folder). */
 export async function findIpod(): Promise<IpodLocation | null> {
@@ -149,50 +174,81 @@ async function backupItunesDb(ipod: IpodLocation): Promise<void> {
   await fs.copyFile(dbPath, previous)
 }
 
-/** Reads ID3/MP4 tags from a local file and copies it onto the iPod, updating iTunesDB. */
-export async function addTrack(
-  ipod: IpodLocation,
-  windowsFilePath: string,
-): Promise<{ id: number; ipodPath: string; artwork: number }> {
-  await backupItunesDb(ipod)
-  const tags = await parseFile(windowsFilePath).catch(() => null)
-  const common = tags?.common
-  const format = tags?.format
+export interface AddTrackResult {
+  id?: number
+  ipodPath?: string
+  artwork?: number
+  error?: string
+}
 
-  // libgpod builds the iPod's thumbnails from an image file, so hand it the embedded cover as a temp file.
-  const picture = common?.picture?.find((p) => p.format === 'image/jpeg' || p.format === 'image/png')
-  let coverFile = ''
-  if (picture) {
-    coverFile = path.join(os.tmpdir(), `ipod-cover-${process.pid}-${Date.now()}.${picture.format === 'image/png' ? 'png' : 'jpg'}`)
-    await fs.writeFile(coverFile, picture.data)
-  }
-
-  const args = [
-    'add',
-    ipod.wslMountpoint,
-    windowsToWsl(windowsFilePath),
-    common?.title ?? '',
-    common?.artist ?? '',
-    common?.album ?? '',
-    common?.genre?.[0] ?? '',
-    String(common?.track?.no ?? 0),
-    String(common?.year ?? 0),
-    String(Math.round((format?.duration ?? 0) * 1000)),
-    String(Math.round((format?.bitrate ?? 0) / 1000)),
-    String(Math.round(format?.sampleRate ?? 0)),
-    '', // filetype: let ipodctl guess it from the file extension
-    coverFile ? windowsToWsl(coverFile) : '',
-  ]
+/** Runs `fn` with a scratch directory (for batch files and cover images) that is removed afterwards. */
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ipod-batch-'))
   try {
-    return await runIpodctl(args)
+    return await fn(dir)
   } finally {
-    if (coverFile) await fs.rm(coverFile, { force: true })
+    await fs.rm(dir, { recursive: true, force: true })
   }
 }
 
-export async function removeTrack(ipod: IpodLocation, trackId: number): Promise<void> {
+// Batch files are tab-separated lines, so tabs/newlines inside a tag must not survive.
+const COLUMN_SEP = '\t'
+const LINE_SEP = '\n'
+const column = (value: unknown): string => String(value ?? '').replace(/[\t\r\n]+/g, ' ')
+
+/**
+ * Reads ID3/MP4 tags from local files and copies them onto the iPod in one go (one iTunesDB
+ * parse and one write for the whole batch - per-file invocations spent nearly all their time
+ * re-reading and re-writing the database). Results are in the same order as `windowsFilePaths`.
+ */
+export async function addTracks(ipod: IpodLocation, windowsFilePaths: string[]): Promise<AddTrackResult[]> {
+  if (windowsFilePaths.length === 0) return []
+  return withTempDir(async (dir) => {
+    const lines: string[] = []
+    for (const [i, filePath] of windowsFilePaths.entries()) {
+      const tags = await parseFile(filePath).catch(() => null)
+      const common = tags?.common
+      const format = tags?.format
+
+      // libgpod builds the iPod's thumbnails from an image file, so hand it the embedded cover as a temp file.
+      const picture = common?.picture?.find((p) => p.format === 'image/jpeg' || p.format === 'image/png')
+      let coverFile = ''
+      if (picture) {
+        coverFile = path.join(dir, `cover-${i}.${picture.format === 'image/png' ? 'png' : 'jpg'}`)
+        await fs.writeFile(coverFile, picture.data)
+      }
+
+      lines.push(
+        [
+          windowsToWsl(filePath),
+          column(common?.title),
+          column(common?.artist),
+          column(common?.album),
+          column(common?.genre?.[0]),
+          String(common?.track?.no ?? 0),
+          String(common?.year ?? 0),
+          String(Math.round((format?.duration ?? 0) * 1000)),
+          String(Math.round((format?.bitrate ?? 0) / 1000)),
+          String(Math.round(format?.sampleRate ?? 0)),
+          '', // filetype: let ipodctl guess it from the file extension
+          coverFile ? windowsToWsl(coverFile) : '',
+        ].join(COLUMN_SEP),
+      )
+    }
+    const batchFile = path.join(dir, 'add.tsv')
+    await fs.writeFile(batchFile, lines.join(LINE_SEP) + LINE_SEP)
+
+    await backupItunesDb(ipod)
+    const { results } = await runIpodctl(['add-batch', ipod.wslMountpoint, windowsToWsl(batchFile)])
+    return results as AddTrackResult[]
+  })
+}
+
+/** Removes tracks (database entries and audio files) with a single database write. */
+export async function removeTracks(ipod: IpodLocation, trackIds: number[]): Promise<{ removed: number; missing: number }> {
+  if (trackIds.length === 0) return { removed: 0, missing: 0 }
   await backupItunesDb(ipod)
-  await runIpodctl(['remove', ipod.wslMountpoint, String(trackId)])
+  return runIpodctl(['remove', ipod.wslMountpoint, ...trackIds.map(String)])
 }
 
 /** Windows path of the audio file behind a track (ipodPath looks like ":iPod_Control:Music:F00:ABCD.mp3"). */
@@ -200,11 +256,21 @@ export function trackWindowsPath(ipod: IpodLocation, track: IpodTrack): string {
   return path.join(ipod.windowsRoot, ...track.ipodPath.split(':').filter(Boolean))
 }
 
-/** Copies a track off the iPod to a local destination file (not a directory). */
-export async function exportTrack(
-  ipod: IpodLocation,
-  trackId: number,
-  destWindowsFilePath: string,
-): Promise<void> {
-  await runIpodctl(['extract', ipod.wslMountpoint, String(trackId), windowsToWsl(destWindowsFilePath)])
+export interface ExportItem {
+  trackId: number
+  destWindowsFilePath: string
+}
+
+/** Copies tracks off the iPod to local destination files (not directories), parsing the database once. */
+export async function exportTracks(ipod: IpodLocation, items: ExportItem[]): Promise<{ destfile?: string; error?: string }[]> {
+  if (items.length === 0) return []
+  return withTempDir(async (dir) => {
+    const batchFile = path.join(dir, 'extract.tsv')
+    await fs.writeFile(
+      batchFile,
+      items.map((item) => [item.trackId, windowsToWsl(item.destWindowsFilePath)].join(COLUMN_SEP)).join(LINE_SEP) + LINE_SEP,
+    )
+    const { results } = await runIpodctl(['extract-batch', ipod.wslMountpoint, windowsToWsl(batchFile)])
+    return results
+  })
 }
