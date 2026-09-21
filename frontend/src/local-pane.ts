@@ -14,9 +14,10 @@ export class LocalPane extends LitElement {
   @state() private error = ''
   @state() private dragOver = false
   @state() private progress: Progress | null = null
-  // Only audio files can be selected; folders just get the keyboard cursor (Enter opens them).
-  private audioPaths = new Set<string>()
-  private sel = new ListSelection((path) => this.audioPaths.has(path))
+  // Audio files and folders can be selected (a selected folder stands for all audio files inside it
+  // when copying to the iPod); other files and the ".." row only get the keyboard cursor.
+  private selectablePaths = new Set<string>()
+  private sel = new ListSelection((path) => this.selectablePaths.has(path))
 
   static styles = css`
     :host {
@@ -99,7 +100,9 @@ export class LocalPane extends LitElement {
         ? [{ name: '..', path: data.parent, isDir: true, sizeBytes: 0, isAudio: false }]
         : []
       this.entries = [...up, ...data.entries]
-      this.audioPaths = new Set(this.entries.filter((e) => e.isAudio).map((e) => e.path))
+      this.selectablePaths = new Set(
+        this.entries.filter((e) => e.isAudio || (e.isDir && e.name !== '..')).map((e) => e.path),
+      )
       // Only announce if there was something to clear - a reload (e.g. after an export) shouldn't
       // steal "active pane" status from the iPod pane.
       const hadSelection = this.sel.selected.size > 0
@@ -168,13 +171,13 @@ export class LocalPane extends LitElement {
     const detail: Selection = {
       kind: 'local',
       paths: this.selectedPaths,
-      focus: cursorEntry && this.audioPaths.has(cursorEntry.path) ? cursorEntry.path : null,
+      focus: cursorEntry?.isAudio ? cursorEntry.path : null,
     }
     this.dispatchEvent(new CustomEvent('selection-change', { detail, bubbles: true, composed: true }))
   }
 
   private onDragStart(e: DragEvent, entry: LocalEntry) {
-    if (entry.isDir || !e.dataTransfer) return
+    if (entry.name === '..' || !e.dataTransfer) return
     // Dragging a selected row drags the whole selection; dragging an unselected one just that file.
     const paths = this.sel.selected.has(entry.path) ? this.selectedPaths : [entry.path]
     e.dataTransfer.effectAllowed = 'copy'
@@ -259,7 +262,7 @@ export class LocalPane extends LitElement {
                         this.sel.selected.has(entry.path) ? 'selected' : '',
                         index === this.sel.cursor ? 'cursor' : '',
                       ].join(' ')}
-                      draggable=${!entry.isDir}
+                      draggable=${entry.name !== '..'}
                       @dragstart=${(e: DragEvent) => this.onDragStart(e, entry)}
                       @click=${(e: MouseEvent) => this.onEntryClick(e, index)}
                     >

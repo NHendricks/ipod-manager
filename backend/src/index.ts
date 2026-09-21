@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as ipod from './ipod.js'
-import { defaultLocalDir, listLocalDir } from './local-files.js'
+import { collectAudioFiles, defaultLocalDir, listLocalDir } from './local-files.js'
 import { readMetadata } from './metadata.js'
 import { getJob, startJob } from './jobs.js'
 import { parseFile } from 'music-metadata'
@@ -46,7 +46,9 @@ app.post('/api/ipod/tracks', async (c) => {
   if (!Array.isArray(body.filePaths) || body.filePaths.length === 0) {
     return c.json({ error: 'filePaths is required' }, 400)
   }
-  const filePaths = body.filePaths
+  // Folders in the selection stand for all the audio files below them.
+  const filePaths = await collectAudioFiles(body.filePaths)
+  if (filePaths.length === 0) return c.json({ error: 'No audio files found in the selection' }, 400)
   // Job result: { results } with one { id, ipodPath, artwork } or { error } per file, in order.
   return c.json(
     startJob(filePaths.length, async (advance) => ({ results: await ipod.addTracks(location, filePaths, advance) })),
@@ -266,7 +268,7 @@ app.post('/api/local/extract-covers', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { paths?: string[] }
   if (!Array.isArray(body.paths) || body.paths.length === 0) return c.json({ error: 'paths is required' }, 400)
   const counts = { saved: 0, exists: 0, none: 0 }
-  for (const filePath of body.paths) counts[await saveFolderCover(filePath, path.dirname(filePath))]++
+  for (const filePath of await collectAudioFiles(body.paths)) counts[await saveFolderCover(filePath, path.dirname(filePath))]++
   return c.json(counts)
 })
 
