@@ -5,7 +5,9 @@ import './ipod-pane'
 import './metadata-dialog'
 import type { LocalPane } from './local-pane'
 import type { IpodPane } from './ipod-pane'
-import type { FileMetadata, Selection } from './types'
+import './tags-dialog'
+import type { FileMetadata, Selection, TagsPreview } from './types'
+import { runJob } from './progress'
 
 @customElement('wizard-app')
 export class WizardApp extends LitElement {
@@ -14,6 +16,13 @@ export class WizardApp extends LitElement {
   @state() private metadataError = ''
   @state() private organizeExports = false
   @state() private status = ''
+  @state() private tagging = false
+  @state() private tagsDialogOpen = false
+  @state() private tagsPreview: TagsPreview | null = null
+  @state() private tagsError = ''
+  private previewRequest = 0
+  @state() private albumDelimiter = ''
+  @state() private artistDelimiter = ''
   // Selection of whichever pane announced one last (the "active" pane).
   @state() private selection: Selection | null = null
 
@@ -42,6 +51,8 @@ export class WizardApp extends LitElement {
     super.connectedCallback()
     try {
       this.organizeExports = localStorage.getItem('organizeExports') === '1'
+      this.albumDelimiter = localStorage.getItem('albumDelimiter') ?? ''
+      this.artistDelimiter = localStorage.getItem('artistDelimiter') ?? ''
     } catch {
       // storage unavailable - keep the default
     }
@@ -54,13 +65,15 @@ export class WizardApp extends LitElement {
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'F3') {
+    if (e.key === 'Escape' && this.tagsDialogOpen) {
+      this.closeTagsDialog()
+    } else if (e.key === 'F3') {
       e.preventDefault()
       if (this.dialogOpen) this.closeDialog()
-      else void this.showMetadata()
+      else if (!this.tagsDialogOpen) void this.showMetadata()
     } else if (e.key === 'F5') {
       e.preventDefault() // don't reload the page
-      if (!this.dialogOpen) void this.copySelected()
+      if (!this.dialogOpen && !this.tagsDialogOpen) void this.copySelected()
     } else if (e.key === 'Escape' && this.dialogOpen) {
       this.closeDialog()
     }
@@ -113,6 +126,83 @@ export class WizardApp extends LitElement {
     }
   }
 
+  private setDelimiter(key: 'albumDelimiter' | 'artistDelimiter', value: string) {
+    this[key] = value
+    try {
+      localStorage.setItem(key, value)
+    } catch {
+      // storage unavailable - the setting just won't persist
+    }
+  }
+
+  /** "Set tags from folders": opens the explanation dialog; nothing is changed until it is confirmed. */
+  private openTagsDialog() {
+    const sel = this.selection
+    if (sel?.kind !== 'local' || sel.paths.length === 0 || this.tagging) return
+    this.tagsDialogOpen = true
+    void this.loadTagsPreview()
+  }
+
+  private closeTagsDialog() {
+    this.tagsDialogOpen = false
+  }
+
+  private onTagsOptionsChange(e: CustomEvent<{ albumDelimiter: string; artistDelimiter: string }>) {
+    this.setDelimiter('albumDelimiter', e.detail.albumDelimiter)
+    this.setDelimiter('artistDelimiter', e.detail.artistDelimiter)
+    void this.loadTagsPreview()
+  }
+
+  private async loadTagsPreview() {
+    const sel = this.selection
+    if (sel?.kind !== 'local') return
+    const request = ++this.previewRequest // ignore answers that arrive after a newer request
+    this.tagsPreview = null
+    this.tagsError = ''
+    try {
+      const res = await fetch('/api/local/set-tags/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: sel.paths, albumDelimiter: this.albumDelimiter, artistDelimiter: this.artistDelimiter }),
+      })
+      const data = await res.json()
+      if (request !== this.previewRequest) return
+      if (data.error) this.tagsError = data.error
+      else this.tagsPreview = data
+    } catch {
+      if (request === this.previewRequest) this.tagsError = 'Backend nicht erreichbar'
+    }
+  }
+
+  /**
+   * Rewrites the ID3 tags of the selected mp3s (folders count as everything inside them) from
+   * <artist>/<album>/<file>.mp3 - see backend/src/id3-tags.ts. Only called from the dialog's confirm button.
+   */
+  private async setTagsFromFolders() {
+    const sel = this.selection
+    if (sel?.kind !== 'local' || sel.paths.length === 0 || this.tagging) return
+    this.tagsDialogOpen = false
+    this.tagging = true
+    this.status = 'Setting tags…'
+    try {
+      const result = await runJob<{ tagged: number; skipped: number; failed: { path: string; error: string }[] }>(
+        '/api/local/set-tags',
+        { paths: sel.paths, albumDelimiter: this.albumDelimiter, artistDelimiter: this.artistDelimiter },
+        (done, total) => (this.status = `Setting tags ${done}/${total}…`),
+      )
+      const failed = result.failed.length
+      this.status =
+        `Tags: ${result.tagged} written` +
+        (result.skipped ? `, ${result.skipped} skipped (not in artist/album folders)` : '') +
+        (failed ? `, ${failed} failed (${result.failed[0].error})` : '')
+      await this.renderRoot.querySelector<LocalPane>('local-pane')?.refresh()
+    } catch (err) {
+      this.status = err instanceof TypeError ? 'Backend nicht erreichbar' : err instanceof Error ? err.message : String(err)
+    } finally {
+      this.tagging = false
+    }
+  }
+
   private closeDialog() {
     this.dialogOpen = false
   }
@@ -159,11 +249,29 @@ export class WizardApp extends LitElement {
         >
           Extract Folder.jpg
         </button>
+        <button
+          ?disabled=${this.tagging || this.selection?.kind !== 'local' || this.selection.paths.length === 0}
+          @click=${this.openTagsDialog}
+          title="Set title, album and artist of the selected mp3s from their artist/album/file.mp3 path (shows what will happen first)"
+        >
+          Set tags from folders…
+        </button>
         <span class="status">${this.status}</span>
         <span class="hint">F3 metadata · F5 copy to other pane · Del delete from iPod · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
       </div>
       <local-pane .organizeExports=${this.organizeExports} @selection-change=${this.onSelectionChange}></local-pane>
       <ipod-pane @selection-change=${this.onSelectionChange}></ipod-pane>
+      ${this.tagsDialogOpen
+        ? html`<tags-dialog
+            .preview=${this.tagsPreview}
+            .error=${this.tagsError}
+            .albumDelimiter=${this.albumDelimiter}
+            .artistDelimiter=${this.artistDelimiter}
+            @options-change=${this.onTagsOptionsChange}
+            @confirm=${this.setTagsFromFolders}
+            @close=${this.closeTagsDialog}
+          ></tags-dialog>`
+        : ''}
       ${this.dialogOpen
         ? html`<metadata-dialog
             .metadata=${this.metadata}

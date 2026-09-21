@@ -8,6 +8,7 @@ import * as ipod from './ipod.js'
 import { collectAudioFiles, defaultLocalDir, listLocalDir } from './local-files.js'
 import { readMetadata } from './metadata.js'
 import { getJob, startJob } from './jobs.js'
+import { clearCoverCache, previewTags, setTagsFromPath, tagsFromPath } from './id3-tags.js'
 import { parseFile } from 'music-metadata'
 
 export const app = new Hono()
@@ -270,6 +271,57 @@ app.post('/api/local/extract-covers', async (c) => {
   const counts = { saved: 0, exists: 0, none: 0 }
   for (const filePath of await collectAudioFiles(body.paths)) counts[await saveFolderCover(filePath, path.dirname(filePath))]++
   return c.json(counts)
+})
+
+// Rewrites the ID3 tags of the selected mp3s in place from their <artist>/<album>/<title>.mp3 path
+// (see id3-tags.ts) as a background job. Job result: { tagged, skipped, failed: [{ path, error }] }.
+interface SetTagsBody {
+  paths?: string[]
+  albumDelimiter?: string
+  artistDelimiter?: string
+}
+
+/** The mp3 files a set-tags request applies to (the selection, with folders expanded). */
+async function mp3sOf(body: SetTagsBody): Promise<string[]> {
+  if (!Array.isArray(body.paths)) return []
+  return (await collectAudioFiles(body.paths)).filter((p) => /\.mp3$/i.test(p))
+}
+
+// What set-tags would do, for the confirmation dialog: how many files it touches, how many it
+// would skip, and before/after tags of the first few. Doesn't modify anything.
+app.post('/api/local/set-tags/preview', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as SetTagsBody
+  const options = { albumDelimiter: body.albumDelimiter, artistDelimiter: body.artistDelimiter }
+  const mp3s = await mp3sOf(body)
+  const applicable = mp3s.filter((p) => tagsFromPath(p, options))
+  const examples = await Promise.all(applicable.slice(0, PREVIEW_EXAMPLES).map((p) => previewTags(p, options)))
+  return c.json({ total: mp3s.length, skipped: mp3s.length - applicable.length, examples })
+})
+
+const PREVIEW_EXAMPLES = 5
+
+app.post('/api/local/set-tags', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as SetTagsBody
+  if (!Array.isArray(body.paths) || body.paths.length === 0) return c.json({ error: 'paths is required' }, 400)
+  const mp3s = await mp3sOf(body)
+  if (mp3s.length === 0) return c.json({ error: 'No mp3 files found in the selection' }, 400)
+  const options = { albumDelimiter: body.albumDelimiter, artistDelimiter: body.artistDelimiter }
+  return c.json(
+    startJob(mp3s.length, async (advance) => {
+      clearCoverCache()
+      const result = { tagged: 0, skipped: 0, failed: [] as { path: string; error: string }[] }
+      for (const [i, filePath] of mp3s.entries()) {
+        try {
+          if ((await setTagsFromPath(filePath, options)) === 'tagged') result.tagged++
+          else result.skipped++
+        } catch (err: any) {
+          result.failed.push({ path: filePath, error: err.message })
+        }
+        advance(i + 1)
+      }
+      return result
+    }),
+  )
 })
 
 app.get('/api/local/list', async (c) => {

@@ -63,3 +63,16 @@ declare global {
     }
   }
 }
+
+// Response of POST /api/local/set-tags/preview (see backend/src/id3-tags.ts, previewTags).
+export interface TagsPreview {
+  total: number // mp3 files in the selection
+  skipped: number // of those, files not inside artist/album folders
+  examples: {
+    fileName: string
+    folder: string | null
+    before: { title: string | null; album: string | null; artist: string | null; hasCover: boolean }
+    after: { title: string; album: string; artist: string } | null
+    cover: string | null
+  }[]
+}

@@ -14,6 +14,7 @@ export class LocalPane extends LitElement {
   @state() private error = ''
   @state() private dragOver = false
   @state() private progress: Progress | null = null
+  @state() private coverVersion = 0
   // Audio files and folders can be selected (a selected folder stands for all audio files inside it
   // when copying to the iPod); other files and the ".." row only get the keyboard cursor.
   private selectablePaths = new Set<string>()
@@ -206,6 +207,7 @@ export class LocalPane extends LitElement {
 
   /** Re-reads the current folder (e.g. after files were created by an action outside this pane). */
   refresh(): Promise<void> {
+    this.coverVersion++ // embedded covers may have changed; thumbnails are otherwise browser-cached
     return this.load(this.currentDir)
   }
 
@@ -272,7 +274,7 @@ export class LocalPane extends LitElement {
                           ? html`<img
                               loading="lazy"
                               alt=""
-                              src=${`/api/local/cover?path=${encodeURIComponent(entry.path)}`}
+                              src=${`/api/local/cover?path=${encodeURIComponent(entry.path)}&v=${this.coverVersion}`}
                               @load=${(e: Event) => (e.target as HTMLImageElement).classList.add('loaded')}
                               @error=${(e: Event) => (e.target as HTMLImageElement).classList.remove('loaded')}
                             />`
