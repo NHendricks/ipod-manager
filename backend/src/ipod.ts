@@ -221,6 +221,8 @@ export interface AddTrackResult {
   id?: number
   ipodPath?: string
   artwork?: number
+  /** The file had a cover but it could not be stored on the iPod. */
+  coverSkipped?: boolean
   error?: string
 }
 
@@ -276,6 +278,7 @@ async function addChunk(
 ): Promise<AddTrackResult[]> {
   return withTempDir(async (dir) => {
     const lines: string[] = []
+    const hadCover: boolean[] = [] // per file: a cover was handed to ipodctl
     for (const [i, filePath] of windowsFilePaths.entries()) {
       const tags = await parseFile(filePath).catch(() => null)
       const common = tags?.common
@@ -288,6 +291,7 @@ async function addChunk(
         coverFile = path.join(dir, `cover-${i}.${picture.format === 'image/png' ? 'png' : 'jpg'}`)
         await fs.writeFile(coverFile, picture.data)
       }
+      hadCover.push(!!coverFile)
 
       lines.push(
         [
@@ -309,8 +313,11 @@ async function addChunk(
     const batchFile = path.join(dir, 'add.tsv')
     await fs.writeFile(batchFile, lines.join(LINE_SEP) + LINE_SEP)
 
-    const { results } = await runIpodctl(['add-batch', ipod.wslMountpoint, windowsToWsl(batchFile)], onProgress)
-    return results as AddTrackResult[]
+    const { results } = (await runIpodctl(['add-batch', ipod.wslMountpoint, windowsToWsl(batchFile)], onProgress)) as {
+      results: AddTrackResult[]
+    }
+    // ipodctl can't store a cover on an iPod whose model it doesn't know (empty SysInfo); say so.
+    return results.map((r, i) => (hadCover[i] && !r.error && r.artwork !== 1 ? { ...r, coverSkipped: true } : r))
   })
 }
 

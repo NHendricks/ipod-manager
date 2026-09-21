@@ -21,6 +21,8 @@ export class IpodPane extends LitElement {
   @state() private firmwareDialogOpen = false
   @state() private repairDialogOpen = false
   @state() private ejecting = false
+  /** A non-fatal hint shown under the header (e.g. covers that could not be stored). */
+  @state() private notice = ''
   /** The iPod was just ejected from here: it is gone from Windows now, and safe to unplug. */
   @state() private ejected = false
   /** Also write embedded covers into the iPod's artwork database when copying (set by the app menubar). */
@@ -73,6 +75,7 @@ export class IpodPane extends LitElement {
     header button.plain:hover:not(:disabled) { background: #26262e; color: #fff; }
     header button.plain:disabled { opacity: .4; cursor: default; }
     .ejected { color: #a8f3c8; }
+    .notice { padding: 6px 12px; font-size: .75rem; color: #f3c98b; background: #2a2116; flex-shrink: 0; }
     .status button.warn {
       background: #3a2a1a; border: 1px solid #7a5a2a; color: #f3c98b; cursor: pointer; font: inherit;
       font-size: .72rem; padding: 0 8px; border-radius: 6px;
@@ -228,21 +231,30 @@ export class IpodPane extends LitElement {
   async importFiles(paths: string[]): Promise<void> {
     if (paths.length === 0 || !this.status.connected || this.progress) return
 
+    this.notice = ''
+    let failure = ''
     this.progress = { label: 'Copying to iPod', done: 0, total: paths.length }
     try {
-      const { results } = await runJob<{ results: { error?: string }[] }>(
+      const { results } = await runJob<{ results: { error?: string; coverSkipped?: boolean }[] }>(
         '/api/ipod/tracks',
         { filePaths: paths, artwork: this.artwork },
         (done, total) => (this.progress = { label: 'Copying to iPod', done, total }),
       )
-      this.error = results.find((r) => r.error)?.error ?? this.error
+      failure = results.find((r) => r.error)?.error ?? ''
+      const skipped = results.filter((r) => r.coverSkipped).length
+      if (skipped > 0) {
+        this.notice =
+          `${skipped} cover${skipped === 1 ? '' : 's'} could not be stored on the iPod: it has no model information. ` +
+          'Use "Repair…" in the status line, then copy again.'
+      }
     } catch (err) {
-      this.error = errorMessage(err)
+      failure = errorMessage(err)
     } finally {
       this.progress = null
     }
     await this.loadTracks()
     await this.refreshStatus()
+    if (failure) this.error = failure
   }
 
   /** Safely removes the iPod (like "Eject" in Explorer); afterwards it can be unplugged. */
@@ -393,6 +405,7 @@ export class IpodPane extends LitElement {
           `
         : ''}
       ${renderProgress(this.progress)}
+      ${this.notice ? html`<div class="notice">${this.notice}</div>` : ''}
       ${this.repairDialogOpen
         ? html`<repair-dialog
             .totalBytes=${this.status.info?.totalBytes ?? 0}

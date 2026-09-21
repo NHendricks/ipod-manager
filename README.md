@@ -108,8 +108,9 @@ Buttons in the menubar:
 
 - **Artist/Album folders** – when copying *from* the iPod, sort files into `Artist/Album/` folders. Every
   copy off the iPod also saves the embedded cover as `Folder.jpg`.
-- **Cover art on iPod** – off by default. When on, copying to the iPod also stores each file's embedded
-  cover in the iPod's artwork database (experimental, and only works once the iPod's model is known).
+- **Cover art on iPod** – on by default. Copying to the iPod also stores each file's embedded cover in
+  the iPod's artwork database. This only works once the iPod's model is known (see "Repair…" under
+  Troubleshooting); without it the app says how many covers could not be stored.
 - **Extract Folder.jpg** – saves the embedded cover of the selected mp3s as `Folder.jpg` in their folder.
 - **Set tags from folders…** – for mp3s sorted as `artist/album/file.mp3`, sets title, album and artist
   from the path (with the sorting fixes the iPod needs), removes ID3v1 and embeds `Folder.jpg` as a

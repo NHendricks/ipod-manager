@@ -15,7 +15,7 @@ export class WizardApp extends LitElement {
   @state() private metadata: FileMetadata | null = null
   @state() private metadataError = ''
   @state() private organizeExports = false
-  @state() private ipodArtwork = false
+  @state() private ipodArtwork = true
   @state() private status = ''
   @state() private tagging = false
   @state() private tagsDialogOpen = false
@@ -52,7 +52,7 @@ export class WizardApp extends LitElement {
     super.connectedCallback()
     try {
       this.organizeExports = localStorage.getItem('organizeExports') === '1'
-      this.ipodArtwork = localStorage.getItem('ipodArtwork') === '1'
+      this.ipodArtwork = localStorage.getItem('ipodArtwork') !== '0' // on unless switched off
       this.albumDelimiter = localStorage.getItem('albumDelimiter') ?? ''
       this.artistDelimiter = localStorage.getItem('artistDelimiter') ?? ''
     } catch {
