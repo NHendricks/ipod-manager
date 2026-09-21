@@ -95,6 +95,18 @@ app.post('/api/ipod/repair', async (c) => {
   }
 })
 
+// "Safely remove": releases the drive from WSL and ejects it in Windows (see ejectIpod).
+app.post('/api/ipod/eject', async (c) => {
+  const location = await ipod.findIpod()
+  if (!location) return c.json({ error: 'No iPod detected' }, 404)
+  try {
+    await ipod.ejectIpod(location)
+    return c.json({ ejected: true })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 app.get('/api/jobs/:id', (c) => {
   const job = getJob(c.req.param('id'))
   return job ? c.json(job) : c.json({ error: 'Unknown job' }, 404)

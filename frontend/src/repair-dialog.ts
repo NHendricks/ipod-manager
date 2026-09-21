@@ -140,8 +140,8 @@ export class RepairDialog extends LitElement {
           <div class="body">
             ${this.done
               ? html`<div class="success">
-                  <strong>Done.</strong> The database was saved with a signature. Eject the iPod in Windows
-                  ("Safely remove hardware"), unplug it and check its Music menu.
+                  <strong>Done.</strong> The database was saved with a signature. Close this dialog, click
+                  <strong>Eject</strong> in the iPod pane, unplug the iPod and check its Music menu.
                 </div>`
               : ''}
             <div class="notice">

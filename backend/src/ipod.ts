@@ -45,7 +45,7 @@ async function execWithMountRepair(args: string[], onProgress?: ProgressCallback
     return await execIpodctl(args, onProgress)
   } catch (err) {
     const letter = /^\/mnt\/([a-z])(?:\/|$)/.exec(args[1] ?? '')?.[1]
-    if (letter && err instanceof IpodError && /Couldn't find an iPod database/.test(err.message)) {
+    if (!ejecting && letter && err instanceof IpodError && /Couldn't find an iPod database/.test(err.message)) {
       await ensureWslMount(letter.toUpperCase(), true)
       return execIpodctl(args, onProgress)
     }
@@ -123,6 +123,7 @@ async function ensureWslMount(driveLetter: string, force = false): Promise<void>
   // Starting wsl.exe costs a noticeable fraction of a second and this runs on every API call
   // (the UI polls the status every few seconds), so trust a successful check for a while.
   // runIpodctl clears this on any failure.
+  if (ejecting) return // the drive is being released - don't mount it again
   const lastOk = mountVerifiedAt.get(driveLetter)
   if (!force && lastOk !== undefined && Date.now() - lastOk < MOUNT_CHECK_TTL_MS) return
   const lower = driveLetter.toLowerCase()
@@ -505,4 +506,58 @@ export async function repairSysInfo(
     await writeSysInfo(ipod, previous).catch(() => {}) // put the old (possibly empty) SysInfo back
     throw err
   }
+}
+
+// ── Eject ─────────────────────────────────────────────────────────────────────
+
+// While ejecting, nothing may mount the drive into WSL again (the periodic status poll would).
+let ejecting = false
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Safely removes the iPod like "Eject" in Explorer: waits for running iPod commands, releases the
+ * drive from WSL (a mounted drive would make Windows refuse: "in use"), then asks Windows to eject
+ * it and waits until the drive letter is gone. Afterwards it is safe to unplug.
+ */
+export function ejectIpod(ipod: IpodLocation): Promise<void> {
+  if (!/^[A-Z]$/.test(ipod.driveLetter)) return Promise.reject(new IpodError('Invalid drive letter'))
+  const letter = ipod.driveLetter
+  const job = ipodctlQueue.then(async () => {
+    ejecting = true
+    try {
+      const lower = letter.toLowerCase()
+      await execFileAsync('wsl.exe', [
+        '-d', WSL_DISTRO, '-u', 'root', '--', 'bash', '-lc',
+        `sync; umount /mnt/${lower} 2>/dev/null || umount -l /mnt/${lower} 2>/dev/null; true`,
+      ]).catch(() => {})
+      mountVerifiedAt.delete(letter)
+
+      try {
+        await execFileAsync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `$item = (New-Object -comObject Shell.Application).Namespace(17).ParseName('${letter}:'); ` +
+            `if ($null -eq $item) { exit 3 }; $item.InvokeVerb('Eject')`,
+        ])
+      } catch (err: any) {
+        if (err.code === 3) throw new IpodError(`Drive ${letter}: not found`)
+        throw new IpodError(`Windows could not eject the iPod: ${err.message}`)
+      }
+
+      // The eject is asynchronous; wait for the drive to disappear.
+      for (let i = 0; i < 20; i++) {
+        await sleep(500)
+        if (!(await fs.access(path.join(ipod.windowsRoot, 'iPod_Control')).then(() => true, () => false))) return
+      }
+      throw new IpodError(
+        'Windows did not release the iPod - a program (e.g. Explorer) may still be using it. ' +
+          'Close it, or use "Safely remove hardware" in the Windows taskbar.',
+      )
+    } finally {
+      ejecting = false
+    }
+  })
+  ipodctlQueue = job.catch(() => {})
+  return job
 }

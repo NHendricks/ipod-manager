@@ -20,6 +20,9 @@ export class IpodPane extends LitElement {
   @state() private resetDialogOpen = false
   @state() private firmwareDialogOpen = false
   @state() private repairDialogOpen = false
+  @state() private ejecting = false
+  /** The iPod was just ejected from here: it is gone from Windows now, and safe to unplug. */
+  @state() private ejected = false
   /** Also write embedded covers into the iPod's artwork database when copying (set by the app menubar). */
   @property({ type: Boolean }) artwork = false
   private pollHandle?: ReturnType<typeof setInterval>
@@ -67,7 +70,9 @@ export class IpodPane extends LitElement {
       background: none; border: 1px solid #2a2a33; color: #a0a0b0; cursor: pointer; font: inherit; font-size: .75rem;
       padding: 2px 10px; border-radius: 6px;
     }
-    header button.plain:hover { background: #26262e; color: #fff; }
+    header button.plain:hover:not(:disabled) { background: #26262e; color: #fff; }
+    header button.plain:disabled { opacity: .4; cursor: default; }
+    .ejected { color: #a8f3c8; }
     .status button.warn {
       background: #3a2a1a; border: 1px solid #7a5a2a; color: #f3c98b; cursor: pointer; font: inherit;
       font-size: .72rem; padding: 0 8px; border-radius: 6px;
@@ -106,6 +111,7 @@ export class IpodPane extends LitElement {
       const data: IpodStatus = await res.json()
       const wasConnected = this.status.connected
       this.status = data
+      if (data.connected) this.ejected = false
       if (data.connected && !wasConnected) await this.loadTracks()
       if (!data.connected) this.tracks = []
     } catch {
@@ -239,6 +245,29 @@ export class IpodPane extends LitElement {
     await this.refreshStatus()
   }
 
+  /** Safely removes the iPod (like "Eject" in Explorer); afterwards it can be unplugged. */
+  private async ejectIpod(): Promise<void> {
+    if (this.ejecting || this.progress) return
+    this.ejecting = true
+    let failure = ''
+    try {
+      const data = await (await fetch('/api/ipod/eject', { method: 'POST' })).json()
+      if (data.error) failure = data.error
+      else this.ejected = true
+    } catch (err) {
+      failure = errorMessage(err)
+    } finally {
+      this.ejecting = false
+    }
+    this.sel.clear()
+    await this.refreshStatus()
+    if (failure) {
+      await this.loadTracks()
+      this.error = failure
+    }
+    this.emitSelection()
+  }
+
   /** Empties the whole iPod library after the reset dialog was confirmed. */
   private async resetLibrary(): Promise<void> {
     this.resetDialogOpen = false
@@ -314,6 +343,14 @@ export class IpodPane extends LitElement {
         </button>
         ${this.status.connected
           ? html`<button
+              class="plain"
+              ?disabled=${this.ejecting || !!this.progress}
+              @click=${this.ejectIpod}
+              title="Safely remove the iPod: after this it can be unplugged"
+            >
+              ${this.ejecting ? 'Ejecting…' : 'Eject'}
+            </button>
+            <button
               class="danger"
               ?disabled=${!!this.progress}
               @click=${() => (this.resetDialogOpen = true)}
@@ -380,7 +417,9 @@ export class IpodPane extends LitElement {
         @drop=${this.onDrop}
       >
         ${!this.status.connected
-          ? html`<div class="disconnected">No iPod detected. Connect it in disk mode and it will show up here.</div>`
+          ? this.ejected
+            ? html`<div class="disconnected ejected">iPod ejected - it is safe to unplug it now.</div>`
+            : html`<div class="disconnected">No iPod detected. Connect it in disk mode and it will show up here.</div>`
           : this.error
             ? html`<div class="error">${this.error}</div>`
             : this.filteredTracks.length === 0

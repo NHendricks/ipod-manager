@@ -118,6 +118,9 @@ Buttons in the menubar:
 
 In the iPod pane's header:
 
+- **Eject** – safely removes the iPod like "Eject" in Explorer (it releases the drive from WSL first, then
+  asks Windows to eject it). Always use it before unplugging: otherwise Windows may not have written the
+  last changes to the iPod yet.
 - **Empty library…** – "resets" the iPod's music: removes every track from the database and deletes
   every file in `iPod_Control/Music`. Firmware, settings, photos and other files stay. A dialog lists
   exactly what happens and you have to type `RESET` to confirm. The deleted audio files cannot be
@@ -143,7 +146,7 @@ In the iPod pane's header:
   normally come from `iPod_Control/Device/SysInfo` – empty on an iPod that never synced with iTunes
   (or was just restored). The iPod pane then shows `Model: unknown` and a **Repair…** button: it
   reads the GUID from Windows, lets you pick the model, writes `SysInfo` and re-saves the database
-  signed. Afterwards eject the iPod in Windows before unplugging it.
+  signed. Afterwards use **Eject** before unplugging the iPod.
 - **"No iPod detected"** – the iPod must be in disk mode and appear as a drive in Windows Explorer.
 - **"Could not run the iPod helper via WSL"** – WSL2 or the `Ubuntu-24.04` distro is missing (check
   `wsl -l -v`), or `wsl/build/ipodctl` hasn't been built (`npm run build:ipodctl`).
