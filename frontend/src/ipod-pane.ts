@@ -1,11 +1,12 @@
 import { LitElement, html, css } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { customElement, state } from 'lit/decorators.js'
 import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
+import { ListSelection } from './list-selection'
 
 @customElement('ipod-pane')
 export class IpodPane extends LitElement {
-  @property({ attribute: false }) selection: Selection | null = null
+  private sel = new ListSelection()
   @state() private status: IpodStatus = { connected: false }
   @state() private tracks: IpodTrack[] = []
   @state() private filter = ''
@@ -15,7 +16,7 @@ export class IpodPane extends LitElement {
   private pollHandle?: ReturnType<typeof setInterval>
 
   static styles = css`
-    :host { display: flex; flex-direction: column; height: 100%; min-height: 0; background: #16161a; }
+    :host { display: flex; flex-direction: column; height: 100%; min-height: 0; background: #16161a; outline: none; }
     header {
       display: flex; align-items: center; gap: 8px; padding: 10px 12px;
       border-bottom: 1px solid #2a2a33; flex-shrink: 0;
@@ -40,6 +41,8 @@ export class IpodPane extends LitElement {
     tbody tr { cursor: default; }
     tbody tr:hover { background: #1f1f27; }
     tbody tr.selected { background: #2b2545; }
+    :host(:focus) tbody tr.cursor { box-shadow: inset 0 0 0 1px #7c3aed; }
+    tbody tr { user-select: none; }
     tbody td { padding: 5px 10px; color: #d8d8e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 1px; }
     td.remove { width: 1.5em; text-align: center; opacity: 0; }
     tbody tr:hover td.remove { opacity: 1; }
@@ -55,12 +58,15 @@ export class IpodPane extends LitElement {
 
   connectedCallback() {
     super.connectedCallback()
+    this.tabIndex = 0
+    this.addEventListener('keydown', this.onKeyDown)
     this.refreshStatus()
     this.pollHandle = setInterval(() => this.refreshStatus(), 3000)
   }
 
   disconnectedCallback() {
     super.disconnectedCallback()
+    this.removeEventListener('keydown', this.onKeyDown)
     if (this.pollHandle) clearInterval(this.pollHandle)
   }
 
@@ -91,15 +97,53 @@ export class IpodPane extends LitElement {
     }
   }
 
-  private selectTrack(track: IpodTrack) {
-    const selection: Selection = { kind: 'ipod', id: track.id }
-    this.dispatchEvent(new CustomEvent('selection-change', { detail: selection, bubbles: true, composed: true }))
+  private get ids(): string[] {
+    return this.filteredTracks.map((t) => String(t.id))
+  }
+
+  private onRowClick(e: MouseEvent, index: number) {
+    this.sel.click(this.ids, index, e.shiftKey, e.ctrlKey || e.metaKey)
+    this.selectionChanged()
+  }
+
+  private onKeyDown = (e: KeyboardEvent) => {
+    // Leave typing in the filter box (and Ctrl+A in it) alone.
+    if (e.composedPath()[0] instanceof HTMLInputElement) return
+    if (this.sel.handleKey(e, this.ids, this.pageSize())) {
+      e.preventDefault()
+      this.selectionChanged()
+    }
+  }
+
+  private pageSize(): number {
+    const list = this.renderRoot.querySelector('.list')
+    const row = this.renderRoot.querySelector('tbody tr')
+    return list && row ? Math.max(1, Math.floor(list.clientHeight / (row as HTMLElement).offsetHeight)) : 10
+  }
+
+  private selectionChanged() {
+    this.emitSelection()
+    this.requestUpdate()
+    void this.updateComplete.then(() => this.renderRoot.querySelector('tr.cursor')?.scrollIntoView({ block: 'nearest' }))
+  }
+
+  /** Selected track ids, in list order, skipping ones that are gone or filtered out. */
+  private get selectedIds(): number[] {
+    return this.filteredTracks.filter((t) => this.sel.selected.has(String(t.id))).map((t) => t.id)
+  }
+
+  private emitSelection() {
+    const cursorTrack = this.filteredTracks[this.sel.cursor]
+    const detail: Selection = { kind: 'ipod', ids: this.selectedIds, focus: cursorTrack?.id ?? null }
+    this.dispatchEvent(new CustomEvent('selection-change', { detail, bubbles: true, composed: true }))
   }
 
   private onDragStart(e: DragEvent, track: IpodTrack) {
     if (!e.dataTransfer) return
+    // Dragging a selected row drags the whole selection; dragging an unselected one just that track.
+    const ids = this.sel.selected.has(String(track.id)) ? this.selectedIds : [track.id]
     e.dataTransfer.effectAllowed = 'copy'
-    e.dataTransfer.setData(DRAG_IPOD_TRACK, String(track.id))
+    e.dataTransfer.setData(DRAG_IPOD_TRACK, JSON.stringify(ids))
     e.dataTransfer.setData('text/plain', `${track.artist ?? ''} - ${track.title ?? ''}`)
   }
 
@@ -122,9 +166,9 @@ export class IpodPane extends LitElement {
     e.preventDefault()
 
     const paths: string[] = []
-    const localPath = e.dataTransfer.getData(DRAG_LOCAL_FILE)
-    if (localPath) {
-      paths.push(localPath)
+    const localPaths = e.dataTransfer.getData(DRAG_LOCAL_FILE)
+    if (localPaths) {
+      paths.push(...(JSON.parse(localPaths) as string[]))
     } else if (e.dataTransfer.files.length > 0) {
       for (const file of e.dataTransfer.files) {
         const p = window.ipodBridge?.getPathForFile(file)
@@ -135,7 +179,12 @@ export class IpodPane extends LitElement {
         return
       }
     }
-    if (paths.length === 0) return
+    await this.importFiles(paths)
+  }
+
+  /** Copies local audio files onto the iPod (drag & drop, or F5 from the local pane). */
+  async importFiles(paths: string[]): Promise<void> {
+    if (paths.length === 0 || !this.status.connected || this.importProgress) return
 
     for (let i = 0; i < paths.length; i++) {
       this.importProgress = `Importing ${i + 1}/${paths.length}…`
@@ -164,6 +213,8 @@ export class IpodPane extends LitElement {
       if (data.error) this.error = data.error
       else {
         this.tracks = this.tracks.filter((t) => t.id !== track.id)
+        this.sel.selected.delete(String(track.id))
+        this.emitSelection()
         await this.refreshStatus()
       }
     } catch {
@@ -197,7 +248,11 @@ export class IpodPane extends LitElement {
               type="text"
               placeholder="Filter by title, artist, album…"
               .value=${this.filter}
-              @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)}
+              @input=${(e: Event) => {
+                this.filter = (e.target as HTMLInputElement).value
+                this.sel.clear() // cursor/anchor are indexes into the filtered list
+                this.emitSelection()
+              }}
             />
           `
         : ''}
@@ -222,11 +277,14 @@ export class IpodPane extends LitElement {
                     </thead>
                     <tbody>
                       ${this.filteredTracks.map(
-                        (track) => html`
+                        (track, index) => html`
                           <tr
-                            class=${this.selection?.kind === 'ipod' && this.selection.id === track.id ? 'selected' : ''}
+                            class=${[
+                              this.sel.selected.has(String(track.id)) ? 'selected' : '',
+                              index === this.sel.cursor ? 'cursor' : '',
+                            ].join(' ')}
                             draggable="true"
-                            @click=${() => this.selectTrack(track)}
+                            @click=${(e: MouseEvent) => this.onRowClick(e, index)}
                             @dragstart=${(e: DragEvent) => this.onDragStart(e, track)}
                           >
                             <td>${track.title ?? '(unknown)'}</td>

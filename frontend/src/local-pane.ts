@@ -2,21 +2,24 @@ import { LitElement, html, css } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import type { LocalEntry, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
+import { ListSelection } from './list-selection'
 
 @customElement('local-pane')
 export class LocalPane extends LitElement {
-  @property({ attribute: false }) selection: Selection | null = null
   @property({ type: Boolean }) organizeExports = false
   @state() private currentDir = ''
   @state() private parent: string | null = null
   @state() private entries: LocalEntry[] = []
   @state() private error = ''
   @state() private dragOver = false
-  @state() private busy = false
+  @state() private busy = ''
+  // Only audio files can be selected; folders just get the keyboard cursor (Enter opens them).
+  private audioPaths = new Set<string>()
+  private sel = new ListSelection((path) => this.audioPaths.has(path))
 
   static styles = css`
     :host {
-      display: flex; flex-direction: column; height: 100%; min-height: 0;
+      display: flex; flex-direction: column; height: 100%; min-height: 0; outline: none;
       background: #16161a; border-right: 1px solid #2a2a33;
     }
     header {
@@ -40,6 +43,7 @@ export class LocalPane extends LitElement {
     }
     li:hover { background: #1f1f27; }
     li.selected { background: #2b2545; }
+    :host(:focus) li.cursor { box-shadow: inset 0 0 0 1px #7c3aed; }
     li.dir { cursor: pointer; color: #cbd5f5; }
     li .icon { width: 1.2em; text-align: center; opacity: .8; }
     li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -54,7 +58,14 @@ export class LocalPane extends LitElement {
 
   connectedCallback() {
     super.connectedCallback()
+    this.tabIndex = 0
+    this.addEventListener('keydown', this.onKeyDown)
     this.load()
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback()
+    this.removeEventListener('keydown', this.onKeyDown)
   }
 
   private async load(dir?: string): Promise<void> {
@@ -72,34 +83,83 @@ export class LocalPane extends LitElement {
       this.currentDir = data.dir
       this.parent = data.parent
       this.entries = data.entries
+      this.audioPaths = new Set(this.entries.filter((e) => e.isAudio).map((e) => e.path))
+      // Only announce if there was something to clear - a reload (e.g. after an export) shouldn't
+      // steal "active pane" status from the iPod pane.
+      const hadSelection = this.sel.selected.size > 0
+      this.sel.clear()
+      if (hadSelection) this.emitSelection()
       this.error = ''
     } catch {
       this.error = 'Backend nicht erreichbar'
     }
   }
 
-  private onEntryClick(entry: LocalEntry) {
-    if (entry.isDir) {
-      this.emitSelection(null)
+  private get ids(): string[] {
+    return this.entries.map((e) => e.path)
+  }
+
+  private onEntryClick(e: MouseEvent, index: number) {
+    const entry = this.entries[index]
+    if (entry.isDir && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       this.load(entry.path)
-    } else {
-      this.emitSelection({ kind: 'local', path: entry.path })
+      return
+    }
+    this.sel.click(this.ids, index, e.shiftKey, e.ctrlKey || e.metaKey)
+    this.selectionChanged()
+  }
+
+  private onKeyDown = (e: KeyboardEvent) => {
+    // Leave typing in inputs (and browser shortcuts like Ctrl+A in a text field) alone.
+    if (e.composedPath()[0] instanceof HTMLInputElement) return
+    if (this.sel.handleKey(e, this.ids, this.pageSize())) {
+      e.preventDefault()
+      this.selectionChanged()
+      return
+    }
+    const cursorEntry = this.entries[this.sel.cursor]
+    if (e.key === 'Enter' && cursorEntry?.isDir) {
+      e.preventDefault()
+      this.load(cursorEntry.path)
+    } else if (e.key === 'Backspace' && this.parent) {
+      e.preventDefault()
+      this.load(this.parent)
     }
   }
 
-  private emitSelection(selection: Selection | null) {
-    this.dispatchEvent(new CustomEvent('selection-change', { detail: selection, bubbles: true, composed: true }))
+  private pageSize(): number {
+    const list = this.renderRoot.querySelector('ul')
+    const row = this.renderRoot.querySelector('li')
+    return list && row ? Math.max(1, Math.floor(list.clientHeight / row.offsetHeight)) : 10
   }
 
-  private isSelected(entry: LocalEntry): boolean {
-    return this.selection?.kind === 'local' && this.selection.path === entry.path
+  private selectionChanged() {
+    this.emitSelection()
+    this.requestUpdate()
+    void this.updateComplete.then(() => this.renderRoot.querySelector('li.cursor')?.scrollIntoView({ block: 'nearest' }))
+  }
+
+  private get selectedPaths(): string[] {
+    return this.entries.filter((e) => this.sel.selected.has(e.path)).map((e) => e.path)
+  }
+
+  private emitSelection() {
+    const cursorEntry = this.entries[this.sel.cursor]
+    const detail: Selection = {
+      kind: 'local',
+      paths: this.selectedPaths,
+      focus: cursorEntry && this.audioPaths.has(cursorEntry.path) ? cursorEntry.path : null,
+    }
+    this.dispatchEvent(new CustomEvent('selection-change', { detail, bubbles: true, composed: true }))
   }
 
   private onDragStart(e: DragEvent, entry: LocalEntry) {
     if (entry.isDir || !e.dataTransfer) return
+    // Dragging a selected row drags the whole selection; dragging an unselected one just that file.
+    const paths = this.sel.selected.has(entry.path) ? this.selectedPaths : [entry.path]
     e.dataTransfer.effectAllowed = 'copy'
-    e.dataTransfer.setData(DRAG_LOCAL_FILE, entry.path)
-    e.dataTransfer.setData('text/plain', entry.path)
+    e.dataTransfer.setData(DRAG_LOCAL_FILE, JSON.stringify(paths))
+    e.dataTransfer.setData('text/plain', paths.join('\n'))
   }
 
   private onDragOver(e: DragEvent) {
@@ -115,22 +175,36 @@ export class LocalPane extends LitElement {
 
   private async onDrop(e: DragEvent) {
     this.dragOver = false
-    const trackId = e.dataTransfer?.getData(DRAG_IPOD_TRACK)
-    if (!trackId) return
+    const payload = e.dataTransfer?.getData(DRAG_IPOD_TRACK)
+    if (!payload) return
     e.preventDefault()
-    this.busy = true
+    await this.exportTracks(JSON.parse(payload) as number[])
+  }
+
+  /** Copies iPod tracks into the current folder (drag & drop, or F5 from the iPod pane). */
+  async exportTracks(trackIds: number[]): Promise<void> {
+    if (this.busy || trackIds.length === 0) return
+    let failure = ''
     try {
-      const res = await fetch(`/api/ipod/tracks/${trackId}/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ destDir: this.currentDir, organize: this.organizeExports }),
-      })
-      const data = await res.json()
-      if (data.error) this.error = data.error
-      else await this.load(this.currentDir)
+      for (let i = 0; i < trackIds.length; i++) {
+        this.busy = `Exporting ${i + 1}/${trackIds.length}…`
+        try {
+          const res = await fetch(`/api/ipod/tracks/${trackIds[i]}/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ destDir: this.currentDir, organize: this.organizeExports }),
+          })
+          const data = await res.json()
+          if (data.error) failure ||= data.error
+        } catch {
+          failure ||= 'Backend nicht erreichbar'
+        }
+      }
     } finally {
-      this.busy = false
+      this.busy = ''
     }
+    await this.load(this.currentDir)
+    if (failure) this.error = failure
   }
 
   render() {
@@ -140,7 +214,7 @@ export class LocalPane extends LitElement {
         <h2>Your Computer</h2>
       </header>
       <div class="path" title=${this.currentDir}>${this.currentDir}</div>
-      ${this.busy ? html`<div class="busy">Exporting…</div>` : ''}
+      ${this.busy ? html`<div class="busy">${this.busy}</div>` : ''}
       <div
         class=${this.dragOver ? 'dropzone drop-target' : 'dropzone'}
         @dragover=${this.onDragOver}
@@ -154,12 +228,17 @@ export class LocalPane extends LitElement {
             : html`
               <ul>
                 ${this.entries.map(
-                  (entry) => html`
+                  (entry, index) => html`
                     <li
-                      class=${[entry.isDir ? 'dir' : '', entry.isAudio ? 'audio' : '', this.isSelected(entry) ? 'selected' : ''].join(' ')}
+                      class=${[
+                        entry.isDir ? 'dir' : '',
+                        entry.isAudio ? 'audio' : '',
+                        this.sel.selected.has(entry.path) ? 'selected' : '',
+                        index === this.sel.cursor ? 'cursor' : '',
+                      ].join(' ')}
                       draggable=${!entry.isDir}
                       @dragstart=${(e: DragEvent) => this.onDragStart(e, entry)}
-                      @click=${() => this.onEntryClick(entry)}
+                      @click=${(e: MouseEvent) => this.onEntryClick(e, index)}
                     >
                       <span class="icon">${entry.isDir ? '📁' : entry.isAudio ? '🎵' : '📄'}</span>
                       <span class="name">${entry.name}</span>

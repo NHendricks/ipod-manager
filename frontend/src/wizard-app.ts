@@ -3,6 +3,8 @@ import { customElement, state } from 'lit/decorators.js'
 import './local-pane'
 import './ipod-pane'
 import './metadata-dialog'
+import type { LocalPane } from './local-pane'
+import type { IpodPane } from './ipod-pane'
 import type { FileMetadata, Selection } from './types'
 
 @customElement('wizard-app')
@@ -10,8 +12,9 @@ export class WizardApp extends LitElement {
   @state() private dialogOpen = false
   @state() private metadata: FileMetadata | null = null
   @state() private metadataError = ''
-  @state() private selection: Selection | null = null
   @state() private organizeExports = false
+  // Selection of whichever pane announced one last (the "active" pane); not rendered, so not reactive.
+  private selection: Selection | null = null
 
   static styles = css`
     :host {
@@ -27,6 +30,7 @@ export class WizardApp extends LitElement {
       background: #26262e; border: 1px solid #2a2a33; color: #a0a0b0; cursor: pointer;
       font: inherit; font-size: .78rem; padding: 4px 10px; border-radius: 6px;
     }
+    .menubar .hint { margin-left: auto; font-size: .72rem; color: #6d6d80; }
     .menubar button:hover { color: #fff; }
     .menubar button[aria-pressed='true'] { background: #2b2545; border-color: #7c3aed; color: #e8e8ec; }
   `
@@ -51,13 +55,27 @@ export class WizardApp extends LitElement {
       e.preventDefault()
       if (this.dialogOpen) this.closeDialog()
       else void this.showMetadata()
+    } else if (e.key === 'F5') {
+      e.preventDefault() // don't reload the page
+      if (!this.dialogOpen) void this.copySelected()
     } else if (e.key === 'Escape' && this.dialogOpen) {
       this.closeDialog()
     }
   }
 
-  private onSelectionChange(e: CustomEvent<Selection | null>) {
+  private onSelectionChange(e: CustomEvent<Selection>) {
     this.selection = e.detail
+  }
+
+  /** F5: copy the active pane's selection to the other pane. */
+  private async copySelected() {
+    const sel = this.selection
+    if (!sel) return
+    if (sel.kind === 'local') {
+      await this.renderRoot.querySelector<IpodPane>('ipod-pane')?.importFiles(sel.paths)
+    } else {
+      await this.renderRoot.querySelector<LocalPane>('local-pane')?.exportTracks(sel.ids)
+    }
   }
 
   private toggleOrganize() {
@@ -76,10 +94,16 @@ export class WizardApp extends LitElement {
   private async showMetadata() {
     const sel = this.selection
     if (!sel) return
-    const url =
-      sel.kind === 'local'
-        ? `/api/local/metadata?path=${encodeURIComponent(sel.path)}`
-        : `/api/ipod/tracks/${sel.id}/metadata`
+    let url: string
+    if (sel.kind === 'local') {
+      const path = sel.focus ?? sel.paths[0]
+      if (!path) return
+      url = `/api/local/metadata?path=${encodeURIComponent(path)}`
+    } else {
+      const id = sel.focus ?? sel.ids[0]
+      if (id === undefined) return
+      url = `/api/ipod/tracks/${id}/metadata`
+    }
     this.metadata = null
     this.metadataError = ''
     this.dialogOpen = true
@@ -102,13 +126,10 @@ export class WizardApp extends LitElement {
         >
           Artist/Album folders: ${this.organizeExports ? 'on' : 'off'}
         </button>
+        <span class="hint">F3 metadata · F5 copy to other pane · Ctrl+A select all · Shift+↑↓/PgUp/PgDn extend</span>
       </div>
-      <local-pane
-        .selection=${this.selection}
-        .organizeExports=${this.organizeExports}
-        @selection-change=${this.onSelectionChange}
-      ></local-pane>
-      <ipod-pane .selection=${this.selection} @selection-change=${this.onSelectionChange}></ipod-pane>
+      <local-pane .organizeExports=${this.organizeExports} @selection-change=${this.onSelectionChange}></local-pane>
+      <ipod-pane @selection-change=${this.onSelectionChange}></ipod-pane>
       ${this.dialogOpen
         ? html`<metadata-dialog
             .metadata=${this.metadata}

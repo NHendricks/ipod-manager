@@ -38,8 +38,11 @@ export interface FileMetadata {
   cover: string | null
 }
 
-// What F3 shows metadata for; panes announce it via a bubbling "selection-change" event.
-export type Selection = { kind: 'local'; path: string } | { kind: 'ipod'; id: number }
+// The active pane's selection, announced via a bubbling "selection-change" event. F3 shows
+// metadata for `focus` (the keyboard cursor, if selectable) or else the first item; F5 copies all items.
+export type Selection =
+  | { kind: 'local'; paths: string[]; focus: string | null }
+  | { kind: 'ipod'; ids: number[]; focus: number | null }
 
 export interface IpodStatus {
   connected: boolean
@@ -49,6 +52,7 @@ export interface IpodStatus {
 }
 
 // application/x-* custom drag payload types shared between local-pane and ipod-pane.
+// Payloads are JSON arrays (string[] of paths / number[] of track ids) so several items can be dragged at once.
 export const DRAG_LOCAL_FILE = 'application/x-local-file-path'
 export const DRAG_IPOD_TRACK = 'application/x-ipod-track-id'
 
