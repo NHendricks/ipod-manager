@@ -65,11 +65,16 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'track'
 }
 
+// Windows rejects folder names ending in a dot or space.
+function sanitizeFolderName(name: string | null, fallback: string): string {
+  return (name ?? '').replace(/[\\/:*?"<>|]/g, '_').trim().replace(/[. ]+$/, '') || fallback
+}
+
 app.post('/api/ipod/tracks/:id/export', async (c) => {
   const location = await ipod.findIpod()
   if (!location) return c.json({ error: 'No iPod detected' }, 404)
   const id = Number(c.req.param('id'))
-  const body = (await c.req.json().catch(() => ({}))) as { destDir?: string }
+  const body = (await c.req.json().catch(() => ({}))) as { destDir?: string; organize?: boolean }
   if (!body.destDir) return c.json({ error: 'destDir is required' }, 400)
   try {
     const tracks = await ipod.listTracks(location)
@@ -77,7 +82,16 @@ app.post('/api/ipod/tracks/:id/export', async (c) => {
     if (!track) return c.json({ error: 'Track not found' }, 404)
     const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
     const filename = sanitizeFilename(`${track.artist ?? ''} - ${track.title ?? 'track'}`.replace(/^ - /, '')) + ext
-    const destPath = path.join(body.destDir, filename)
+    // "organize": <destDir>/<artist>/<album>/<file>
+    const targetDir = body.organize
+      ? path.join(
+          body.destDir,
+          sanitizeFolderName(track.artist, 'Unknown Artist'),
+          sanitizeFolderName(track.album, 'Unknown Album'),
+        )
+      : body.destDir
+    await fs.mkdir(targetDir, { recursive: true })
+    const destPath = path.join(targetDir, filename)
     await ipod.exportTrack(location, id, destPath)
     return c.json({ path: destPath })
   } catch (err: any) {

@@ -6,6 +6,7 @@ import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 @customElement('local-pane')
 export class LocalPane extends LitElement {
   @property({ attribute: false }) selection: Selection | null = null
+  @property({ type: Boolean }) organizeExports = false
   @state() private currentDir = ''
   @state() private parent: string | null = null
   @state() private entries: LocalEntry[] = []
@@ -122,7 +123,7 @@ export class LocalPane extends LitElement {
       const res = await fetch(`/api/ipod/tracks/${trackId}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ destDir: this.currentDir }),
+        body: JSON.stringify({ destDir: this.currentDir, organize: this.organizeExports }),
       })
       const data = await res.json()
       if (data.error) this.error = data.error
