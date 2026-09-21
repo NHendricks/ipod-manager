@@ -4,6 +4,7 @@ import type { IpodStatus, IpodTrack, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
 import './reset-dialog'
+import './firmware-dialog'
 import { renderProgress, progressStyles, runJob, type Progress } from './progress'
 
 @customElement('ipod-pane')
@@ -16,6 +17,7 @@ export class IpodPane extends LitElement {
   @state() private dragOver = false
   @state() private progress: Progress | null = null
   @state() private resetDialogOpen = false
+  @state() private firmwareDialogOpen = false
   private pollHandle?: ReturnType<typeof setInterval>
   private polling = false
 
@@ -57,6 +59,11 @@ export class IpodPane extends LitElement {
     .dropzone.drop-target { outline: 2px dashed #7c3aed; outline-offset: -2px; }
     .empty, .error, .disconnected { padding: 24px; text-align: center; color: #6d6d80; font-size: .85rem; }
     .error { color: #f77; }
+    header button.plain {
+      background: none; border: 1px solid #2a2a33; color: #a0a0b0; cursor: pointer; font: inherit; font-size: .75rem;
+      padding: 2px 10px; border-radius: 6px;
+    }
+    header button.plain:hover { background: #26262e; color: #fff; }
     header button.danger {
       background: none; border: 1px solid #5a2a2a; color: #e88; cursor: pointer; font: inherit; font-size: .75rem;
       padding: 2px 10px; border-radius: 6px;
@@ -124,7 +131,7 @@ export class IpodPane extends LitElement {
 
   private onKeyDown = (e: KeyboardEvent) => {
     // Leave typing in the filter box (and Ctrl+A in it) alone.
-    if (this.resetDialogOpen || e.composedPath()[0] instanceof HTMLInputElement) return
+    if (this.resetDialogOpen || this.firmwareDialogOpen || e.composedPath()[0] instanceof HTMLInputElement) return
     if (this.sel.handleKey(e, this.ids, this.pageSize())) {
       e.preventDefault()
       this.selectionChanged()
@@ -289,6 +296,9 @@ export class IpodPane extends LitElement {
     return html`
       <header>
         <h2>iPod</h2>
+        <button class="plain" @click=${() => (this.firmwareDialogOpen = true)} title="How to restore the iPod's firmware (needs Apple's tool)">
+          Firmware…
+        </button>
         ${this.status.connected
           ? html`<button
               class="danger"
@@ -321,6 +331,9 @@ export class IpodPane extends LitElement {
           `
         : ''}
       ${renderProgress(this.progress)}
+      ${this.firmwareDialogOpen
+        ? html`<firmware-dialog @close=${() => (this.firmwareDialogOpen = false)}></firmware-dialog>`
+        : ''}
       ${this.resetDialogOpen
         ? html`<reset-dialog
             .trackCount=${this.status.info?.trackCount ?? this.tracks.length}

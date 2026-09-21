@@ -120,6 +120,10 @@ In the iPod pane's header:
   every file in `iPod_Control/Music`. Firmware, settings, photos and other files stay. A dialog lists
   exactly what happens and you have to type `RESET` to confirm. The deleted audio files cannot be
   restored.
+- **Firmware…** – explains how to restore the iPod's *firmware* from an Apple firmware image
+  (`.ipsw`). The app can't do this itself: it only manages the music database (libgpod), and
+  writing firmware needs Apple's own restore tool (iTunes for Windows). The dialog walks through
+  reset, disk mode and the restore, and is available even when no iPod is detected.
 
 ## Safety
 

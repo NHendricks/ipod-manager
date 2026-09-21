@@ -1,1 +1,2 @@
-- add option to reset ipod
+- show model number of ipod
+- add option to reset ipod from image
