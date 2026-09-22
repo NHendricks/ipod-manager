@@ -15,6 +15,8 @@ export class LocalPane extends LitElement {
   @state() private dragOver = false
   @state() private progress: Progress | null = null
   @state() private coverVersion = 0
+  @state() private drives: { path: string; label: string }[] = []
+  private lastDirByDrive = new Map<string, string>()
   // Audio files and folders can be selected (a selected folder stands for all audio files inside it
   // when copying to the iPod); other files and the ".." row only get the keyboard cursor.
   private selectablePaths = new Set<string>()
@@ -35,6 +37,11 @@ export class LocalPane extends LitElement {
       padding: 2px 8px; border-radius: 6px;
     }
     button.icon:disabled { opacity: .4; cursor: default; }
+    select.drives {
+      background: #1f1f27; border: 1px solid #2a2a33; color: #e8e8ec; border-radius: 6px;
+      padding: 2px 6px; font: inherit; font-size: .8rem; outline: none;
+    }
+    select.drives:focus { border-color: #7c3aed; }
     button.icon.label { font: inherit; font-size: .8rem; white-space: nowrap; }
     button.icon:hover { background: #26262e; color: #fff; }
     .path {
@@ -73,12 +80,32 @@ export class LocalPane extends LitElement {
     super.connectedCallback()
     this.tabIndex = 0
     this.addEventListener('keydown', this.onKeyDown)
+    void this.loadDrives()
     this.load()
   }
 
   disconnectedCallback() {
     super.disconnectedCallback()
     this.removeEventListener('keydown', this.onKeyDown)
+  }
+
+  /** Drive letter of the current folder, e.g. "D:" (empty for paths without one). */
+  private get currentDrive(): string {
+    return /^[A-Za-z]:/.test(this.currentDir) ? this.currentDir.slice(0, 2).toUpperCase() : ''
+  }
+
+  private async loadDrives(): Promise<void> {
+    try {
+      this.drives = (await (await fetch('/api/local/drives')).json()).drives ?? []
+    } catch {
+      // keep the list we have
+    }
+  }
+
+  /** Jumps to the drive's last visited folder, or its root the first time. */
+  private switchDrive(root: string): void {
+    const drive = root.slice(0, 2).toUpperCase()
+    void this.load(drive === this.currentDrive ? root : (this.lastDirByDrive.get(drive) ?? root))
   }
 
   private async load(dir?: string): Promise<void> {
@@ -95,6 +122,7 @@ export class LocalPane extends LitElement {
       }
       const previousDir = this.currentDir
       this.currentDir = data.dir
+      this.lastDirByDrive.set(this.currentDrive, data.dir)
       this.parent = data.parent
       // ".." is a real (folder) row so arrows/Enter/click treat it like any other folder.
       const up: LocalEntry[] = data.parent
@@ -135,7 +163,8 @@ export class LocalPane extends LitElement {
 
   private onKeyDown = (e: KeyboardEvent) => {
     // Leave typing in inputs (and browser shortcuts like Ctrl+A in a text field) alone.
-    if (e.composedPath()[0] instanceof HTMLInputElement) return
+    const target = e.composedPath()[0]
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return
     if (this.sel.handleKey(e, this.ids, this.pageSize())) {
       e.preventDefault()
       this.selectionChanged()
@@ -237,6 +266,18 @@ export class LocalPane extends LitElement {
   render() {
     return html`
       <header>
+        ${this.drives.length > 0
+          ? html`<select
+              class="drives"
+              title="Switch drive (remembers the last folder of each drive)"
+              @focus=${this.loadDrives}
+              @change=${(e: Event) => this.switchDrive((e.target as HTMLSelectElement).value)}
+            >
+              ${this.drives.map(
+                (d) => html`<option value=${d.path} ?selected=${d.path.slice(0, 2).toUpperCase() === this.currentDrive}>${d.label}</option>`,
+              )}
+            </select>`
+          : ''}
         <button class="icon" ?disabled=${!this.parent} @click=${() => this.parent && this.load(this.parent)} title="Up">⬆</button>
         <button class="icon label" @click=${() => this.load()} title="Go to the standard Music folder">🎵 Music</button>
         <h2>Your Computer</h2>

@@ -1,0 +1,3 @@
+- speed has dramatically decreased since image is extracted from mp3s. Check this once more !!
+- add feature to set current dir as  default dir
+- when copy failed, add feature to continue and not start over again

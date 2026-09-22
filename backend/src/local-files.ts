@@ -78,3 +78,33 @@ export async function collectAudioFiles(paths: string[]): Promise<string[]> {
   }
   return [...found]
 }
+
+export interface DriveEntry {
+  /** Root path to browse, e.g. D:\ (drive root). */
+  path: string
+  /** Short label for the drive selector, e.g. "D:" or "E: (iPod)". */
+  label: string
+}
+
+/** Resolves true if `p` can be accessed, false if not - or if that takes over a second (dead network / card reader). */
+async function reachable(p: string): Promise<boolean> {
+  return Promise.race([
+    fs.access(p).then(() => true, () => false),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+  ])
+}
+
+/** The drives of this computer (Windows drive letters that exist right now); empty on other platforms. */
+export async function listDrives(): Promise<DriveEntry[]> {
+  if (process.platform !== 'win32') return []
+  const letters = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))
+  const drives = await Promise.all(
+    letters.map(async (letter): Promise<DriveEntry | null> => {
+      const root = `${letter}:\\`
+      if (!(await reachable(root))) return null
+      const isIpod = await reachable(path.join(root, 'iPod_Control'))
+      return { path: root, label: isIpod ? `${letter}: (iPod)` : `${letter}:` }
+    }),
+  )
+  return drives.filter((d): d is DriveEntry => d !== null)
+}

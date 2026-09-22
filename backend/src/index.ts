@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as ipod from './ipod.js'
-import { collectAudioFiles, defaultLocalDir, listLocalDir } from './local-files.js'
+import { collectAudioFiles, defaultLocalDir, listDrives, listLocalDir } from './local-files.js'
 import { readMetadata } from './metadata.js'
 import { getJob, startJob } from './jobs.js'
 import { clearCoverCache, previewTags, setTagsFromPath, tagsFromPath } from './id3-tags.js'
@@ -231,6 +231,9 @@ app.get('/api/ipod/tracks/:id/metadata', async (c) => {
 // ── Local filesystem ──────────────────────────────────────────────────────────
 
 app.get('/api/local/home', (c) => c.json({ dir: defaultLocalDir() }))
+
+// Drives for the drive selector above the local file list (Windows only; empty elsewhere).
+app.get('/api/local/drives', async (c) => c.json({ drives: await listDrives() }))
 
 app.get('/api/local/metadata', async (c) => {
   const filePath = c.req.query('path')
