@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js'
 import type { LocalEntry, Selection } from './types'
 import { DRAG_LOCAL_FILE, DRAG_IPOD_TRACK } from './types'
 import { ListSelection } from './list-selection'
-import { renderProgress, progressStyles, runJob, type Progress } from './progress'
+import { renderProgress, progressStyles, runJob, formatTransferReport, type Progress } from './progress'
 
 @customElement('local-pane')
 export class LocalPane extends LitElement {
@@ -14,6 +14,8 @@ export class LocalPane extends LitElement {
   @state() private error = ''
   @state() private dragOver = false
   @state() private progress: Progress | null = null
+  /** A non-fatal hint shown under the header (e.g. the MB/s report after a copy). */
+  @state() private notice = ''
   @state() private coverVersion = 0
   @state() private drives: { path: string; label: string }[] = []
   private lastDirByDrive = new Map<string, string>()
@@ -73,6 +75,7 @@ export class LocalPane extends LitElement {
     .dropzone.drop-target { outline: 2px dashed #7c3aed; outline-offset: -2px; }
     .empty, .error { padding: 24px; text-align: center; color: #6d6d80; font-size: .85rem; }
     .error { color: #f77; }
+    .notice { padding: 6px 12px; font-size: .75rem; color: #a78bfa; flex-shrink: 0; }
     ${progressStyles}
   `
 
@@ -245,14 +248,16 @@ export class LocalPane extends LitElement {
     if (this.progress || trackIds.length === 0) return
     const label = 'Copying from iPod'
     let failure = ''
+    this.notice = ''
     this.progress = { label, done: 0, total: trackIds.length }
     try {
-      const { results } = await runJob<{ results: { error?: string }[] }>(
+      const { result, elapsedMs } = await runJob<{ results: { error?: string }[]; bytesTransferred: number }>(
         '/api/ipod/export',
         { ids: trackIds, destDir: this.currentDir, organize: this.organizeExports },
-        (done, total) => (this.progress = { label, done, total }),
+        (done, total, bytesDone, elapsedMs) => (this.progress = { label, done, total, bytesDone, elapsedMs }),
       )
-      failure = results.find((r) => r.error)?.error ?? ''
+      failure = result.results.find((r) => r.error)?.error ?? ''
+      this.notice = formatTransferReport(result.bytesTransferred, elapsedMs)
     } catch (err) {
       // fetch() rejects with a TypeError when the backend can't be reached.
       failure = err instanceof TypeError ? 'Backend nicht erreichbar' : err instanceof Error ? err.message : String(err)
@@ -284,6 +289,7 @@ export class LocalPane extends LitElement {
       </header>
       <div class="path" title=${this.currentDir}>${this.currentDir}</div>
       ${renderProgress(this.progress)}
+      ${this.notice ? html`<div class="notice">${this.notice}</div>` : ''}
       <div
         class=${this.dragOver ? 'dropzone drop-target' : 'dropzone'}
         @dragover=${this.onDragOver}

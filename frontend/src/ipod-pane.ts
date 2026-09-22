@@ -6,7 +6,7 @@ import { ListSelection } from './list-selection'
 import './reset-dialog'
 import './firmware-dialog'
 import './repair-dialog'
-import { renderProgress, progressStyles, runJob, type Progress } from './progress'
+import { renderProgress, progressStyles, runJob, formatTransferReport, type Progress } from './progress'
 
 @customElement('ipod-pane')
 export class IpodPane extends LitElement {
@@ -235,18 +235,25 @@ export class IpodPane extends LitElement {
     let failure = ''
     this.progress = { label: 'Copying to iPod', done: 0, total: paths.length }
     try {
-      const { results } = await runJob<{ results: { error?: string; coverSkipped?: boolean }[] }>(
+      const { result, elapsedMs } = await runJob<{
+        results: { error?: string; coverSkipped?: boolean }[]
+        bytesTransferred: number
+      }>(
         '/api/ipod/tracks',
         { filePaths: paths, artwork: this.artwork },
-        (done, total) => (this.progress = { label: 'Copying to iPod', done, total }),
+        (done, total, bytesDone, elapsedMs) => (this.progress = { label: 'Copying to iPod', done, total, bytesDone, elapsedMs }),
       )
+      const { results, bytesTransferred } = result
       failure = results.find((r) => r.error)?.error ?? ''
       const skipped = results.filter((r) => r.coverSkipped).length
+      const notices = [formatTransferReport(bytesTransferred, elapsedMs)]
       if (skipped > 0) {
-        this.notice =
+        notices.push(
           `${skipped} cover${skipped === 1 ? '' : 's'} could not be stored on the iPod: it has no model information. ` +
-          'Use "Repair…" in the status line, then copy again.'
+            'Use "Repair…" in the status line, then copy again.',
+        )
       }
+      this.notice = notices.join(' · ')
     } catch (err) {
       failure = errorMessage(err)
     } finally {

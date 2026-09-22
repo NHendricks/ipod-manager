@@ -196,7 +196,7 @@ export class WizardApp extends LitElement {
     this.tagging = true
     this.status = 'Setting tags…'
     try {
-      const result = await runJob<{ tagged: number; skipped: number; failed: { path: string; error: string }[] }>(
+      const { result } = await runJob<{ tagged: number; skipped: number; failed: { path: string; error: string }[] }>(
         '/api/local/set-tags',
         { paths: sel.paths, albumDelimiter: this.albumDelimiter, artistDelimiter: this.artistDelimiter },
         (done, total) => (this.status = `Setting tags ${done}/${total}…`),

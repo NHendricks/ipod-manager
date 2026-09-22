@@ -50,11 +50,14 @@ app.post('/api/ipod/tracks', async (c) => {
   // Folders in the selection stand for all the audio files below them.
   const filePaths = await collectAudioFiles(body.filePaths)
   if (filePaths.length === 0) return c.json({ error: 'No audio files found in the selection' }, 400)
-  // Job result: { results } with one { id, ipodPath, artwork } or { error } per file, in order.
+  // Job result: { results, bytesTransferred } - results has one { id, ipodPath, artwork } or { error } per file, in order.
   return c.json(
-    startJob(filePaths.length, async (advance) => ({
-      results: await ipod.addTracks(location, filePaths, advance, body.artwork === true),
-    })),
+    startJob(filePaths.length, async (advance) => {
+      const results = await ipod.addTracks(location, filePaths, advance, body.artwork === true)
+      const sizes = await Promise.all(filePaths.map((p) => fs.stat(p).then((s) => s.size).catch(() => 0)))
+      const bytesTransferred = results.reduce((sum, r, i) => sum + (r.error ? 0 : sizes[i]), 0)
+      return { results, bytesTransferred }
+    }),
   )
 })
 
@@ -148,22 +151,37 @@ async function saveFolderCover(audioPath: string, targetDir: string): Promise<Co
   }
 }
 
-// Copies tracks off the iPod as a background job (see jobs.ts). Job result: { results } with one
-// { path } or { error } per id, in order.
+// Copies tracks off the iPod as a background job (see jobs.ts). Job result: { results, bytesTransferred } -
+// results has one { path } or { error } per id, in order.
+//
+// The actual file copy is a plain Node `fs.copyFile` (trackWindowsPath -> destPath), not routed
+// through ipodctl/WSL: the audio file is just a regular file on the iPod's Windows drive letter,
+// and libgpod is only needed to look up which file a track is (listTracks, already done above).
+// Going through WSL for the copy itself used to relay every byte over WSL2's drvfs (9p) bridge on
+// BOTH ends (reading /mnt/<ipod> and writing /mnt/<dest>), which is where the ~3.5 MB/s ceiling in
+// doc/performance.md actually came from - not the iPod's USB/FireWire link, since iTunes (which
+// never goes through WSL) reaches full speed on the same device. See per-track timing logged by
+// the old code path for the smoking gun: a handful of tracks near 100+ MB/s, then a hard drop to a
+// steady ~3.5 MB/s for the rest, with no sign of it recovering - inconsistent with a hardware cap,
+// consistent with a slow bridge whose window (Windows/9p cache) had run out.
 async function exportTracksJob(
   location: ipod.IpodLocation,
   ids: number[],
   destDir: string,
   organize: boolean,
-  advance: (done: number) => void,
+  advance: (done: number, bytesDone?: number) => void,
 ) {
   const tracks = new Map((await ipod.listTracks(location)).map((t) => [t.id, t]))
-  const destPaths: (string | null)[] = []
-  const items: ipod.ExportItem[] = []
+  const results: { path?: string; error?: string }[] = []
+  const coverTried = new Set<string>() // folders whose Folder.jpg is settled
+  let bytesTransferred = 0
+  let done = 0
+
   for (const id of ids) {
     const track = tracks.get(id)
     if (!track) {
-      destPaths.push(null)
+      results.push({ error: 'Track not found' })
+      advance(++done, bytesTransferred)
       continue
     }
     const ext = path.extname(track.ipodPath.replace(/:/g, '/')) || '.mp3'
@@ -178,30 +196,27 @@ async function exportTracksJob(
       : destDir
     await fs.mkdir(targetDir, { recursive: true })
     const destPath = path.join(targetDir, filename)
-    destPaths.push(destPath)
-    items.push({ trackId: id, destWindowsFilePath: destPath })
-  }
 
-  const exported = await ipod.exportTracks(location, items, advance)
-  const results: { path?: string; error?: string }[] = []
-  const coverTried = new Set<string>() // folders whose Folder.jpg is settled
-  let next = 0
-  for (const destPath of destPaths) {
-    if (destPath === null) {
-      results.push({ error: 'Track not found' })
-      continue
+    try {
+      // Per-file timing, same purpose as the old ipodctl stderr logging (see doc/performance.md):
+      // lets a slow export be diagnosed track-by-track instead of only as one averaged number.
+      const t0 = Date.now()
+      await fs.copyFile(ipod.trackWindowsPath(location, track), destPath)
+      const elapsedMs = Date.now() - t0
+      const mb = track.sizeBytes / (1024 * 1024)
+      const mbPerSec = elapsedMs > 0 ? mb / (elapsedMs / 1000) : mb
+      console.log(`[export] track ${track.id}: ${mb.toFixed(1)} MB in ${elapsedMs} ms (${mbPerSec.toFixed(1)} MB/s)`)
+      results.push({ path: destPath })
+      bytesTransferred += track.sizeBytes
+      // Once per folder is enough; keep trying with later tracks only while they have no cover.
+      const dir = path.dirname(destPath)
+      if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
+    } catch (err: any) {
+      results.push({ error: err.message })
     }
-    const outcome = exported[next++]
-    if (outcome?.error || !outcome) {
-      results.push({ error: outcome?.error ?? 'Export failed' })
-      continue
-    }
-    results.push({ path: destPath })
-    // Once per folder is enough; keep trying with later tracks only while they have no cover.
-    const dir = path.dirname(destPath)
-    if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
+    advance(++done, bytesTransferred)
   }
-  return { results }
+  return { results, bytesTransferred }
 }
 
 app.post('/api/ipod/export', async (c) => {

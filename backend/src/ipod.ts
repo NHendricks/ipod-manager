@@ -32,8 +32,12 @@ function windowsToWsl(windowsPath: string): string {
 // read a half-written file), so they run strictly one after another.
 let ipodctlQueue: Promise<unknown> = Promise.resolve()
 
-/** Called with the number of items a batch command has finished so far (see report_progress in ipodctl.c). */
-type ProgressCallback = (done: number) => void
+/**
+ * Called with the number of items a batch command has finished so far, and the cumulative bytes
+ * transferred so far (0 for commands that don't move file data, e.g. remove/reset) - see
+ * report_progress in ipodctl.c.
+ */
+type ProgressCallback = (done: number, bytesDone: number) => void
 
 /**
  * Runs ipodctl; if libgpod can't find the database, the WSL mount is most likely dead (iPod
@@ -81,8 +85,16 @@ function spawnIpodctl(args: string[], onProgress?: ProgressCallback): Promise<{ 
       const lines = unparsed.split('\n')
       unparsed = lines.pop() ?? ''
       for (const line of lines) {
-        const match = /^\{"progress":(\d+)\}$/.exec(line.trim())
-        if (match) onProgress(Number(match[1]))
+        const match = /^\{"progress":(\d+),"bytes":(\d+)\}$/.exec(line.trim())
+        if (match) onProgress(Number(match[1]), Number(match[2]))
+      }
+    })
+    // Per-file timing (see ipodctl.c's extract-batch) lands here, not on stdout - it isn't part
+    // of the JSON protocol, just a diagnostic for tracking down uneven transfer speeds.
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (text: string) => {
+      for (const line of text.split('\n')) {
+        if (line.trim()) console.error(`[ipodctl] ${line.trim()}`)
       }
     })
     child.on('error', (err) => resolve({ stdout: chunks.join(''), failure: err.message }))
@@ -262,10 +274,23 @@ export async function addTracks(
   if (windowsFilePaths.length === 0) return []
   await backupItunesDb(ipod) // once per job, so ".previous" undoes the whole job
   const results: AddTrackResult[] = []
+  let bytesBase = 0
   for (let i = 0; i < windowsFilePaths.length; i += WRITE_CHUNK_SIZE) {
     const chunk = windowsFilePaths.slice(i, i + WRITE_CHUNK_SIZE)
-    results.push(...(await addChunk(ipod, chunk, (done) => onProgress?.(i + done), artwork)))
-    onProgress?.(i + chunk.length)
+    let chunkBytes = 0
+    results.push(
+      ...(await addChunk(
+        ipod,
+        chunk,
+        (done, bytes) => {
+          chunkBytes = bytes
+          onProgress?.(i + done, bytesBase + chunkBytes)
+        },
+        artwork,
+      )),
+    )
+    bytesBase += chunkBytes
+    onProgress?.(i + chunk.length, bytesBase)
   }
   return results
 }
@@ -332,10 +357,10 @@ export async function removeTracks(
   await backupItunesDb(ipod) // once per job, so ".previous" undoes the whole job
   for (let i = 0; i < trackIds.length; i += WRITE_CHUNK_SIZE) {
     const chunk = trackIds.slice(i, i + WRITE_CHUNK_SIZE)
-    const result = await runIpodctl(['remove', ipod.wslMountpoint, ...chunk.map(String)], (done) => onProgress?.(i + done))
+    const result = await runIpodctl(['remove', ipod.wslMountpoint, ...chunk.map(String)], (done) => onProgress?.(i + done, 0))
     total.removed += result.removed
     total.missing += result.missing
-    onProgress?.(i + chunk.length)
+    onProgress?.(i + chunk.length, 0)
   }
   return total
 }
@@ -343,29 +368,6 @@ export async function removeTracks(
 /** Windows path of the audio file behind a track (ipodPath looks like ":iPod_Control:Music:F00:ABCD.mp3"). */
 export function trackWindowsPath(ipod: IpodLocation, track: IpodTrack): string {
   return path.join(ipod.windowsRoot, ...track.ipodPath.split(':').filter(Boolean))
-}
-
-export interface ExportItem {
-  trackId: number
-  destWindowsFilePath: string
-}
-
-/** Copies tracks off the iPod to local destination files (not directories), parsing the database once. */
-export async function exportTracks(
-  ipod: IpodLocation,
-  items: ExportItem[],
-  onProgress?: ProgressCallback,
-): Promise<{ destfile?: string; error?: string }[]> {
-  if (items.length === 0) return []
-  return withTempDir(async (dir) => {
-    const batchFile = path.join(dir, 'extract.tsv')
-    await fs.writeFile(
-      batchFile,
-      items.map((item) => [item.trackId, windowsToWsl(item.destWindowsFilePath)].join(COLUMN_SEP)).join(LINE_SEP) + LINE_SEP,
-    )
-    const { results } = await runIpodctl(['extract-batch', ipod.wslMountpoint, windowsToWsl(batchFile)], onProgress)
-    return results
-  })
 }
 
 /** Number of files under iPod_Control/Music - the progress total for {@link resetLibrary}. */

@@ -225,10 +225,12 @@ static gchar **read_batch_lines(const char *batchfile, GError **error) {
   return lines;
 }
 
-/* Long-running batch commands print a {"progress":<items done>} line after each item (the Node
-   side streams stdout and shows a progress bar); the last line is still the final result. */
-static void report_progress(int done) {
-  printf("{\"progress\":%d}\n", done);
+/* Long-running batch commands print a {"progress":<items done>,"bytes":<cumulative bytes
+   transferred so far>} line after each item (the Node side streams stdout, so the UI can show a
+   progress bar and a live transfer speed while the job is still running); the last line is still
+   the final result. `bytes` is 0 for commands with nothing to measure (remove, reset). */
+static void report_progress(int done, guint64 bytes) {
+  printf("{\"progress\":%d,\"bytes\":%llu}\n", done, (unsigned long long)bytes);
   fflush(stdout);
 }
 
@@ -290,6 +292,7 @@ static int cmd_add_batch(const char *mountpoint, const char *batchfile) {
 
   GString *buf = g_string_new("{\"results\":[");
   int added = 0, entries = 0;
+  guint64 bytes_done = 0;
   for (gchar **l = lines; *l; l++) {
     if ((*l)[0] == '\0') continue;
     if (entries++ > 0) g_string_append_c(buf, ',');
@@ -306,6 +309,7 @@ static int cmd_add_batch(const char *mountpoint, const char *batchfile) {
         if (track_error) g_error_free(track_error);
       } else {
         added++;
+        bytes_done += track->size;
         g_string_append_c(buf, '{');
         jint(buf, "id", track->id, TRUE);
         jint(buf, "artwork", artwork ? 1 : 0, TRUE);
@@ -314,7 +318,7 @@ static int cmd_add_batch(const char *mountpoint, const char *batchfile) {
       }
     }
     g_strfreev(f);
-    report_progress(entries);
+    report_progress(entries, bytes_done);
   }
   g_string_append(buf, "]}");
   g_strfreev(lines);
@@ -367,7 +371,7 @@ static int cmd_remove(const char *mountpoint, int count, char **ids) {
 
   for (guint i = 0; i < files->len; i++) {
     g_unlink((const gchar *)g_ptr_array_index(files, i));
-    report_progress((int)i + 1);
+    report_progress((int)i + 1, 0);
   }
   g_ptr_array_free(files, TRUE);
 
@@ -466,7 +470,7 @@ static int cmd_reset(const char *mountpoint) {
           gchar *filepath = g_build_filename(subpath, name, NULL);
           if (g_file_test(filepath, G_FILE_TEST_IS_REGULAR) && g_unlink(filepath) == 0) {
             files++;
-            report_progress(files);
+            report_progress(files, 0);
           }
           g_free(filepath);
         }
@@ -535,6 +539,7 @@ static int cmd_extract_batch(const char *mountpoint, const char *batchfile) {
 
   GString *buf = g_string_new("{\"results\":[");
   int entries = 0;
+  guint64 bytes_done = 0;
   for (gchar **l = lines; *l; l++) {
     if ((*l)[0] == '\0') continue;
     if (entries++ > 0) g_string_append_c(buf, ',');
@@ -550,18 +555,30 @@ static int cmd_extract_batch(const char *mountpoint, const char *batchfile) {
         append_error_entry(buf, "Track not found");
       } else if (!realfile) {
         append_error_entry(buf, "Could not resolve track path on the iPod");
-      } else if (!itdb_cp(realfile, f[1], &copy_error)) {
-        append_error_entry(buf, copy_error && copy_error->message ? copy_error->message : "Could not copy file from the iPod");
       } else {
-        g_string_append_c(buf, '{');
-        jstr(buf, "destfile", f[1], FALSE);
-        g_string_append_c(buf, '}');
+        /* Per-file timing to stderr (not part of the stdout JSON protocol - see the file
+           header): shows whether a slow overall batch is a few uniformly slow tracks, or a
+           mix of RAM-cache-speed and device-speed tracks averaging out. */
+        gint64 t_start = g_get_monotonic_time();
+        gboolean copy_ok = itdb_cp(realfile, f[1], &copy_error);
+        double elapsed_ms = (g_get_monotonic_time() - t_start) / 1000.0;
+        double mb = track->size / (1024.0 * 1024.0);
+        double mb_per_sec = elapsed_ms > 0.5 ? mb / (elapsed_ms / 1000.0) : mb;
+        fprintf(stderr, "[extract-batch] track %u: %.1f MB in %.1f ms (%.1f MB/s)\n", track->id, mb, elapsed_ms, mb_per_sec);
+        if (!copy_ok) {
+          append_error_entry(buf, copy_error && copy_error->message ? copy_error->message : "Could not copy file from the iPod");
+        } else {
+          bytes_done += track->size;
+          g_string_append_c(buf, '{');
+          jstr(buf, "destfile", f[1], FALSE);
+          g_string_append_c(buf, '}');
+        }
       }
       if (copy_error) g_error_free(copy_error);
       g_free(realfile);
     }
     g_strfreev(f);
-    report_progress(entries);
+    report_progress(entries, bytes_done);
   }
   g_string_append(buf, "]}");
   g_strfreev(lines);

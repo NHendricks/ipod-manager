@@ -101,7 +101,7 @@ and run one at a time.
 | ↑ ↓ PgUp PgDn Home End | Move the cursor; Shift extends the selection, Ctrl+A selects all |
 | Enter, Backspace | Open a folder / go up (also the `..` row and the ⬆ and 🎵 Music buttons) |
 | Drive selector (left pane, Windows) | Switch to another drive, e.g. `D:`; it returns to the last folder you had open on that drive |
-| **F5** or drag & drop | Copy the selection to the other pane. Folders copy every audio file inside them |
+| **F5** or drag & drop | Copy the selection to the other pane. Folders copy every audio file inside them; afterwards the pane shows a report ("14.9 MB in 4.8 s (3.1 MB/s)") |
 | **F3** | Show tags, technical info and cover of a file |
 | **Del** | Delete the selected tracks from the iPod (asks first) |
 
