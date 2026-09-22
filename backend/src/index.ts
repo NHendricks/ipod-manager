@@ -197,11 +197,19 @@ async function exportTracksJob(
     await fs.mkdir(targetDir, { recursive: true })
     const destPath = path.join(targetDir, filename)
 
+    // Copy to a temp file next to the destination first, and only rename it into place once the
+    // read from the iPod is fully done: a crash/disconnect mid-copy then leaves either the old
+    // file (untouched) or nothing at destPath, never a truncated/corrupt one, and re-running the
+    // export afterwards just overwrites the stray .part file instead of tripping over a half-
+    // written destPath. The temp file lives in the same folder as destPath so the rename is an
+    // atomic same-volume move, not a copy.
+    const tempPath = `${destPath}.${track.id}.part`
     try {
       // Per-file timing, same purpose as the old ipodctl stderr logging (see doc/performance.md):
       // lets a slow export be diagnosed track-by-track instead of only as one averaged number.
       const t0 = Date.now()
-      await fs.copyFile(ipod.trackWindowsPath(location, track), destPath)
+      await fs.copyFile(ipod.trackWindowsPath(location, track), tempPath)
+      await fs.rename(tempPath, destPath)
       const elapsedMs = Date.now() - t0
       const mb = track.sizeBytes / (1024 * 1024)
       const mbPerSec = elapsedMs > 0 ? mb / (elapsedMs / 1000) : mb
@@ -212,6 +220,7 @@ async function exportTracksJob(
       const dir = path.dirname(destPath)
       if (!coverTried.has(dir) && (await saveFolderCover(destPath, dir)) !== 'none') coverTried.add(dir)
     } catch (err: any) {
+      await fs.rm(tempPath, { force: true }).catch(() => {})
       results.push({ error: err.message })
     }
     advance(++done, bytesTransferred)
